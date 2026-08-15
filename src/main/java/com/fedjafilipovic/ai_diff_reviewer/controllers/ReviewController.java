@@ -166,8 +166,12 @@ public class ReviewController {
                 throw new InvalidJsonException("options.maxFindings is out of range");
             }
             maxFindings = (int) asLong;
-            if (maxFindings < 1) {
-                throw new InvalidJsonException("options.maxFindings must be >= 1");
+            // The spec states a default (100) but never a minimum: 0 is a
+            // legitimate instruction to report no findings while still
+            // running the full scan (usage stays accurate) — only a
+            // negative count is actually malformed input.
+            if (maxFindings < 0) {
+                throw new InvalidJsonException("options.maxFindings must be a non-negative integer");
             }
         }
         return new ReviewOptions(provider, maxFindings);

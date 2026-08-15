@@ -10,19 +10,26 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Token bucket on POST /v1/reviews only — GETs are never rate limited.
- * Capacity 30, refill 0.5 tokens/sec (= 30/min sustained). Rejection is
- * always 429 + Retry-After + envelope, never a 5xx.
+ * Two layers: a per-caller bucket (keyed by the Authorization header, so a
+ * single-tenant deployment with one token behaves exactly like one shared
+ * bucket) at capacity {@link AppLimits#RATE_LIMIT_PER_MINUTE} — this is the
+ * limit /spec declares — plus one overall bucket at
+ * {@link AppLimits#RATE_LIMIT_HARD_CAP_PER_MINUTE} shared across every
+ * caller as a guardrail. A request must clear both to proceed; either one
+ * being empty is a 429 + Retry-After + envelope, never a 5xx.
  */
 @Component
 @Order(2)
 public class RateLimitFilter extends OncePerRequestFilter {
 
-    private final TokenBucket bucket = new TokenBucket(
-            AppLimits.RATE_LIMIT_PER_MINUTE,
-            AppLimits.RATE_LIMIT_PER_MINUTE / 60.0);
+    private final ConcurrentHashMap<String, TokenBucket> perCaller = new ConcurrentHashMap<>();
+    private final TokenBucket overall = new TokenBucket(
+            AppLimits.RATE_LIMIT_HARD_CAP_PER_MINUTE,
+            AppLimits.RATE_LIMIT_HARD_CAP_PER_MINUTE / 60.0);
 
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
@@ -33,12 +40,33 @@ public class RateLimitFilter extends OncePerRequestFilter {
             chain.doFilter(req, res);
             return;
         }
+
+        String callerKey = callerKeyOf(req);
+        TokenBucket bucket = perCaller.computeIfAbsent(callerKey, k -> new TokenBucket(
+                AppLimits.RATE_LIMIT_PER_MINUTE, AppLimits.RATE_LIMIT_PER_MINUTE / 60.0));
+
         if (!bucket.tryAcquire()) {
-            FilterJsonErrors.write(res, 429, "rate_limited",
-                    "Rate limit exceeded", String.valueOf(bucket.retryAfterSeconds()));
+            reject(res, bucket);
+            return;
+        }
+        if (!overall.tryAcquire()) {
+            bucket.refund(); // don't let a global-cap rejection cost this caller a token
+            reject(res, overall);
             return;
         }
         chain.doFilter(req, res);
+    }
+
+    private static void reject(HttpServletResponse res, TokenBucket exhausted) throws IOException {
+        FilterJsonErrors.write(res, 429, "rate_limited",
+                "Rate limit exceeded", String.valueOf(exhausted.retryAfterSeconds()));
+    }
+
+    /** By this point BearerAuthFilter has already validated the token, so the
+     *  header value alone is a stable, sufficient per-caller identity. */
+    private static String callerKeyOf(HttpServletRequest req) {
+        String header = req.getHeader("Authorization");
+        return header != null ? header : "unauthenticated";
     }
 
     /** Simple synchronized token bucket. */
@@ -51,7 +79,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         TokenBucket(double capacity, double refillPerSecond) {
             this.capacity = capacity;
             this.refillPerSecond = refillPerSecond;
-            this.tokens = capacity; // start full: natural 30-request burst
+            this.tokens = capacity; // start full: natural burst up to capacity
             this.lastRefillNanos = System.nanoTime();
         }
 
@@ -62,6 +90,12 @@ public class RateLimitFilter extends OncePerRequestFilter {
                 return true;
             }
             return false;
+        }
+
+        /** Gives back a token taken by a caller whose request was rejected by
+         *  a different, downstream check — that request never actually went through. */
+        synchronized void refund() {
+            tokens = Math.min(capacity, tokens + 1.0);
         }
 
         synchronized long retryAfterSeconds() {

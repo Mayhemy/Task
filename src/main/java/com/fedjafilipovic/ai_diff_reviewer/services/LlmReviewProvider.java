@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Real-LLM provider behind the same pipeline. Generic OpenAI-compatible
@@ -51,6 +52,13 @@ public class LlmReviewProvider implements ReviewProvider {
     private static final java.util.Set<String> VALID_CATEGORIES =
             java.util.Set.of("security", "correctness", "performance", "style");
 
+    private static final int MAX_ATTEMPTS = 2;
+    /** Total wall-clock budget for every attempt plus backoff combined, kept
+     *  well under the 30 s job SLA regardless of the configured per-request
+     *  timeout — a slow or misconfigured timeout can never let a retry push
+     *  the whole call past it. */
+    private static final long OVERALL_BUDGET_MILLIS = 25_000;
+
     private final AppProperties props;
     private final ObjectMapper mapper;
     private final HttpClient http;
@@ -69,7 +77,7 @@ public class LlmReviewProvider implements ReviewProvider {
             throw new ProviderException("llm provider not configured");
         }
         try {
-            String raw = callModel(chunkText);
+            String raw = callModelWithRetry(chunkText);
             return parseFindings(raw);
         } catch (ProviderException e) {
             throw e;
@@ -78,7 +86,62 @@ public class LlmReviewProvider implements ReviewProvider {
         }
     }
 
-    private String callModel(String chunkText) throws IOException, InterruptedException, ProviderException {
+    /**
+     * Calls the model, retrying once on a transient failure — a connection or
+     * timeout error, or a 429/5xx from the vendor — with a short jittered
+     * backoff. Any other failure (a deterministic 4xx, or a malformed
+     * response) is never retried: retrying something that can't change just
+     * spends the budget for no benefit. Every attempt plus backoff shares one
+     * overall deadline, so retrying can never itself blow the 30 s job SLA.
+     */
+    private String callModelWithRetry(String chunkText) throws IOException, InterruptedException, ProviderException {
+        long deadline = System.currentTimeMillis() + OVERALL_BUDGET_MILLIS;
+        IOException lastNetworkFailure = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) {
+                if (lastNetworkFailure != null) {
+                    throw lastNetworkFailure;
+                }
+                throw new ProviderException("llm provider retry budget exhausted");
+            }
+            Duration attemptTimeout = Duration.ofMillis(
+                    Math.min(props.getLlmTimeoutSeconds() * 1000L, remaining));
+            try {
+                return callModel(chunkText, attemptTimeout);
+            } catch (IOException e) {
+                lastNetworkFailure = e;
+                if (attempt == MAX_ATTEMPTS || !backoff(deadline, attempt)) {
+                    throw e;
+                }
+            } catch (RetryableStatusException e) {
+                if (attempt == MAX_ATTEMPTS || !backoff(deadline, attempt)) {
+                    throw new ProviderException("llm provider returned HTTP " + e.status);
+                }
+            }
+        }
+        throw new ProviderException("llm provider retry budget exhausted");
+    }
+
+    /** Sleeps a short jittered backoff if the overall deadline allows it; false if it's already spent. */
+    private static boolean backoff(long deadline, int attempt) throws InterruptedException {
+        long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0) {
+            return false;
+        }
+        long delay = Math.min(remaining, 300L * attempt + ThreadLocalRandom.current().nextInt(150));
+        Thread.sleep(delay);
+        return true;
+    }
+
+    /** Internal signal for a status worth retrying (429 or 5xx) — never
+     *  escapes callModelWithRetry as a public exception type. */
+    private static final class RetryableStatusException extends RuntimeException {
+        final int status;
+        RetryableStatusException(int status) { this.status = status; }
+    }
+
+    private String callModel(String chunkText, Duration timeout) throws IOException, InterruptedException, ProviderException {
         Map<String, Object> body = Map.of(
                 "model", props.getLlmModel(),
                 "temperature", 0,
@@ -88,15 +151,19 @@ public class LlmReviewProvider implements ReviewProvider {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(props.getLlmBaseUrl().replaceAll("/+$", "") + "/chat/completions"))
-                .timeout(Duration.ofSeconds(props.getLlmTimeoutSeconds()))
+                .timeout(timeout)
                 .header("Authorization", "Bearer " + props.getLlmApiKey())
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
                 .build();
 
         HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() / 100 != 2) {
-            throw new ProviderException("llm provider returned HTTP " + response.statusCode());
+        int status = response.statusCode();
+        if (status == 429 || status >= 500) {
+            throw new RetryableStatusException(status);
+        }
+        if (status / 100 != 2) {
+            throw new ProviderException("llm provider returned HTTP " + status);
         }
         JsonNode root = mapper.readTree(response.body());
         JsonNode content = root.path("choices").path(0).path("message").path("content");

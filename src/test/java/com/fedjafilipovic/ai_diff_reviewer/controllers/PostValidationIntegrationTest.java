@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 7. malformed JSON / wrong shape -> 400 invalid_json
  * 8. diff missing/empty/blank/non-textual/no-hunks -> 422 invalid_diff
  * 9. unknown top-level fields ignored -> 202
- * 10. options defaults / invalid provider / maxFindings 0 -> 400; truncation
+ * 10. options defaults / invalid provider / maxFindings truncation (0 is a valid "no findings" value)
  * 11. Content-Type text/plain with valid JSON -> works (no 415)
  *
  * Precedence enforced by filter/controller ordering: 401 -> 429 -> 413 -> 400 -> 422.
@@ -208,9 +208,19 @@ class PostValidationIntegrationTest {
     }
 
     @Test
-    void maxFindingsZeroReturns400() {
-        assertThat(http().post("/v1/reviews",
-                "{\"diff\":\"" + VALID_DIFF + "\",\"options\":{\"maxFindings\":0}}", T, null, null, null).status()).isEqualTo(400);
+    void maxFindingsZeroIsAcceptedAndYieldsNoFindings() throws Exception {
+        // The spec states a default (100) but never a minimum -- 0 is a
+        // legitimate "report nothing" instruction, not malformed input.
+        // VALID_DIFF has one real MOCK-001 finding, so this also proves the
+        // full scan still ran (findings truncated to zero, not skipped).
+        HttpSupport.RawResponse r = http().post("/v1/reviews",
+                "{\"diff\":\"" + VALID_DIFF + "\",\"options\":{\"maxFindings\":0}}", T, null, null, null);
+        assertThat(r.status()).isEqualTo(202);
+        String jobId = env(r.body()).get("jobId").asText();
+        awaitDone(jobId);
+        JsonNode job = env(http().get("/v1/reviews/" + jobId, T).body());
+        assertThat(job.get("status").asText()).isEqualTo("done");
+        assertThat(job.get("findings")).isEmpty();
     }
 
     @Test
