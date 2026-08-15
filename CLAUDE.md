@@ -14,6 +14,15 @@ An **AI diff review service** (take-home task, scored by automated probes agains
 
 Fully implemented, tested, and deployed — see `STATUS.md` for the detailed status, bug history, and deployment runbook.
 
+## Working guidelines
+
+- **Think before coding.** State assumptions explicitly. If more than one interpretation is plausible, surface them instead of silently picking one. Stop and ask when something's genuinely unclear rather than guessing.
+- **Simplicity first.** Minimum code that solves the problem — no speculative abstractions, no unrequested configurability, no error handling for scenarios that can't happen here. If it could be a third of the size, rewrite it.
+- **Surgical changes.** Touch only what the task requires; don't refactor or reformat adjacent code, and match existing style even if you'd choose differently. Remove only the imports/variables *your* change orphaned — leave pre-existing dead code alone, just mention it.
+- **Goal-driven execution.** Turn a vague ask into a verifiable check before starting — "fix the bug" → write a failing test, then make it pass. For multi-step work, state a short plan with one verification step per item, so you can loop to green without checking in after every line.
+
+These bias toward caution over speed — for genuinely trivial changes (typo, one-line fix), use judgment and skip the ceremony.
+
 ## Commands (Windows — `mvnw.cmd` in cmd/PowerShell; `./mvnw` in Git Bash)
 
 ```bash
