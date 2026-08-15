@@ -50,14 +50,21 @@ All secrets/config come from a **`.env` file** (`KEY=value`, gitignored) at the 
 POST validates and parses **synchronously** (auth → rate limit → size → JSON → field validation → diff parse+chunk) — 4xx are request-level errors and must never create a job. Only rule-matching / the LLM call runs async, on a **bounded 4-thread executor with an unbounded queue** (5th+ concurrent job waits, never rejected). Jobs live in an in-memory `ConcurrentHashMap`; each `Job` holds an **append-only SSE event log** plus a live-subscriber list so `/stream` replays finished jobs identically. **Idempotency-Key and body-hash result caching are two separate mechanisms** — don't conflate them. The mock provider is pure line-scan/regex logic; the LLM provider is one HTTPS call behind the same interface, and any failure becomes a `failed` job, never a crash.
 
 ```
-config/    AppLimits (single source of truth for every limit), ExecutorConfig, AppProperties
-web/       HealthController, SpecController, ReviewController, StreamController,
-           BearerAuthFilter, RateLimitFilter, ApiExceptionHandler, EnvelopeErrorController
-domain/    Finding, Job, JobStatus, Usage, ReviewOptions, SseEventRecord, DiffLine, LineType
-diff/      DiffParser, Chunker, InvalidDiffException
-provider/  ReviewProvider, MockReviewProvider, LlmReviewProvider, ProviderException
-service/   JobService, JobStore, IdempotencyStore, ResultCache
-util/      Hashing
+bootstrap/      AiDiffReviewerApplication (@SpringBootApplication, explicit scanBasePackages —
+                 see note below on why)
+configuration/  AppLimits (single source of truth for every limit), AppProperties,
+                 ExecutorConfig, UptimeClock, StartupCheck
+controllers/    HealthController, SpecController, ReviewController, StreamController,
+                 EnvelopeErrorController
+filters/        BearerAuthFilter, RateLimitFilter, FilterJsonErrors
+dto/            Finding, Usage, ReviewOptions, SseEventRecord, ApiError, ErrorEnvelope
+models/         Job, JobStatus, DiffLine, LineType
+exceptions/     InvalidDiffException, ProviderException, ApiExceptions, ApiExceptionHandler
+services/       DiffParser, Chunker, ReviewProvider, MockReviewProvider, LlmReviewProvider,
+                 JobService
+repositories/   JobStore, IdempotencyStore, ResultCache (in-memory, no database — named for
+                 the role they play, not the backing store)
+utils/          Hashing
 ```
 
 ## Conventions worth knowing before touching this code
@@ -81,6 +88,7 @@ util/      Hashing
 - **Idempotency-Key and result caching are independent mechanisms.** Same key → same job identity, conflict if body differs. Body hash → same computed result, regardless of key (or no key at all). Don't merge them into one map.
 - **Integration test classes sharing an identical `@SpringBootTest(properties = ...)` value share one cached Spring context** — and therefore one singleton `RateLimitFilter` bucket. A new test class under `properties = "app.bearer-token=tok"` needs `@DirtiesContext` (see any existing integration test's class javadoc for the pattern) or its own unique marker property, or it will silently drain/be-drained-by sibling test classes.
 - **`SUBMISSION.md` and `NOTES-my-approach.md` are intentionally gitignored** — held out of the repo until the user commits them deliberately.
+- **`AiDiffReviewerApplication` lives in `bootstrap/`, a sibling of every other package, not an ancestor.** Component scanning only walks *down* from the annotated class's own package, so it needs an explicit `scanBasePackages = "com.fedjafilipovic.ai_diff_reviewer"` to still pick up `controllers/`, `services/`, etc. Every `@SpringBootTest` integration test class (they live in `controllers/`, also a sibling) needs `classes = AiDiffReviewerApplication.class` for the same reason — `@SpringBootTest`'s auto-detection walks *up* the test's own package chain and would never cross into `bootstrap/`. If you add a new `@SpringBootTest` class, copy this from an existing one or it'll fail to find a configuration class.
 
 ## Deployment
 

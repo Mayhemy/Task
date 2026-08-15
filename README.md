@@ -141,11 +141,14 @@ against real HTTP calls.
 
 ```
 src/main/java/.../
-  config/    limits, executor pool, startup checks
-  web/       controllers, auth/rate-limit filters, error handling
-  domain/    Job, Finding, Usage, and related types
-  diff/      unified-diff parser and chunker
-  provider/  the mock rule engine and the LLM provider
-  service/   job orchestration, idempotency store, result cache
-  util/      hashing
+  bootstrap/      application entry point
+  configuration/  limits, executor pool, startup checks
+  controllers/    HTTP endpoints
+  filters/        auth, rate limiting, error envelope writing
+  dto/            request/response types (Finding, Usage, ReviewOptions, ...)
+  models/         core domain entities (Job, JobStatus, DiffLine, ...)
+  exceptions/     domain and API exception types
+  services/       diff parser, chunker, mock rule engine, LLM provider, job orchestration
+  repositories/   in-memory job store, idempotency store, result cache
+  utils/          hashing
 ```
