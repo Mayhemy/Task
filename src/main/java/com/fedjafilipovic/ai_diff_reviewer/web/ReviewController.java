@@ -157,7 +157,15 @@ public class ReviewController {
             if (!maxNode.isInt() && !maxNode.isLong()) {
                 throw new InvalidJsonException("options.maxFindings must be an integer");
             }
-            maxFindings = maxNode.asInt();
+            // A value that fits in a long but overflows int (e.g. 3000000000)
+            // is still isLong()==true — asInt() on that throws internally
+            // instead of clamping/wrapping, which previously escaped as an
+            // uncaught 500. Check the range explicitly first.
+            long asLong = maxNode.asLong();
+            if (asLong > Integer.MAX_VALUE || asLong < Integer.MIN_VALUE) {
+                throw new InvalidJsonException("options.maxFindings is out of range");
+            }
+            maxFindings = (int) asLong;
             if (maxFindings < 1) {
                 throw new InvalidJsonException("options.maxFindings must be >= 1");
             }

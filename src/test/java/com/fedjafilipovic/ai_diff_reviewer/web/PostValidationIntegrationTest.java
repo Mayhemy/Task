@@ -218,6 +218,18 @@ class PostValidationIntegrationTest {
     }
 
     @Test
+    void maxFindingsOverflowingIntReturns400NotInternalError() throws Exception {
+        // A value that fits in a JSON/long number but overflows a 32-bit int
+        // (Integer.MAX_VALUE = 2147483647) must be rejected as invalid input,
+        // not crash: JsonNode.asInt() throws on out-of-range long values
+        // rather than clamping, which previously escaped as an uncaught 500.
+        HttpSupport.RawResponse r = http().post("/v1/reviews",
+                "{\"diff\":\"" + VALID_DIFF + "\",\"options\":{\"maxFindings\":3000000000}}", T, null, null, null);
+        assertThat(r.status()).isEqualTo(400);
+        assertThat(env(r.body()).get("error").get("code").asText()).isEqualTo("invalid_json");
+    }
+
+    @Test
     void maxFindingsTruncatesFindingsButUsageReflectsFullScan() throws Exception {
         // A diff with 3 findings, maxFindings=3 -> exactly 3 returned.
         String diff = "--- a/f.js\\n+++ b/f.js\\n@@ -1 +1 @@\\n+eval(a); console.log(b); // TODO\\n";
