@@ -140,6 +140,22 @@ class DiffParserTest {
     }
 
     @Test
+    void hunkWithNoPrecedingFileHeaderYieldsNoLines() {
+        // A hunk that appears with NO "--- "/"+++ " lines before it at all
+        // (not even a +++ /dev/null) is a distinct code path from
+        // deletedFileDevNullYieldsZeroAddedLines above: currentPath is never
+        // assigned rather than explicitly set to null. sawHunk still becomes
+        // true (a valid diff — no InvalidDiffException), but every hunk line
+        // is silently dropped since there's no path to attach it to. Real
+        // unified diffs always carry file headers before a hunk; this pins
+        // the intentional "nothing to review" behavior rather than a crash
+        // or a NullPointerException surfacing as a path later.
+        String diff = "@@ -1 +1 @@\n+eval(x)\n";
+        List<DiffLine> lines = parser.parse(diff);
+        assertThat(lines).isEmpty();
+    }
+
+    @Test
     void noNewlineMarkerDoesNotShiftCounter() {
         // The "no newline" marker is its own standalone line starting with
         // '\' — it is NOT prefixed with '+' (that would make it an added

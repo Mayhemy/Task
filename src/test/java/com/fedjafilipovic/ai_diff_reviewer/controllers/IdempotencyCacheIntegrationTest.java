@@ -187,6 +187,53 @@ class IdempotencyCacheIntegrationTest {
         assertThat(env(http().get("/v1/reviews/" + id2, T).body()).get("status").asText()).isEqualTo("failed");
     }
 
+    @Test
+    void whitespaceOnlyIdempotencyKeyTreatedAsAbsent() throws Exception {
+        // The blank-check is isBlank(), not isEmpty() — a key that's just
+        // whitespace must fall through to "no key" and never conflate two
+        // otherwise-identical requests into one idempotency slot.
+        HttpSupport.RawResponse r1 = http().post("/v1/reviews", DIFF_BODY, T, "   ", null, null);
+        HttpSupport.RawResponse r2 = http().post("/v1/reviews", DIFF_BODY, T, "   ", null, null);
+        String id1 = env(r1.body()).get("jobId").asText();
+        String id2 = env(r2.body()).get("jobId").asText();
+        assertThat(id1).isNotEqualTo(id2);
+    }
+
+    @Test
+    void idempotencyReplayAfterFailureReturnsSameFailedJobNotARetry() throws Exception {
+        // Idempotency-Key identifies a REQUEST, not "retry until success":
+        // replaying the same key after the job terminated in `failed` must
+        // return that same failed job again, unlike a fresh submission with
+        // no key (row 28 / failedLlmJobIsNotCachedAndResubmitReRuns), which
+        // re-runs. Different mechanism (IdempotencyStore keyed by header)
+        // than the body-hash ResultCache that row 28 exercises.
+        String body = "{\"diff\":\"+++ b/f.js\\n@@ -1 +1 @@\\n+x\\n\",\"options\":{\"provider\":\"llm\"}}";
+        HttpSupport.RawResponse r1 = http().post("/v1/reviews", body, T, "fail-replay-key", null, null);
+        String id1 = env(r1.body()).get("jobId").asText();
+        awaitTerminal(id1);
+        assertThat(env(http().get("/v1/reviews/" + id1, T).body()).get("status").asText()).isEqualTo("failed");
+
+        HttpSupport.RawResponse r2 = http().post("/v1/reviews", body, T, "fail-replay-key", null, null);
+        String id2 = env(r2.body()).get("jobId").asText();
+        assertThat(id2).isEqualTo(id1);
+        assertThat(env(http().get("/v1/reviews/" + id2, T).body()).get("status").asText()).isEqualTo("failed");
+    }
+
+    @Test
+    void idempotencyKeyOnAValidationFailingRequestNeverConsumesTheSlot() throws Exception {
+        // A 422/400 is a request-level error and must never create a job —
+        // that also means it must never occupy an Idempotency-Key slot. The
+        // same key reused on a follow-up VALID request must succeed fresh,
+        // not be blocked or conflated by the earlier failed validation.
+        String key = "validation-then-valid-key";
+        HttpSupport.RawResponse bad = http().post("/v1/reviews", "{\"diff\":\"\"}", T, key, null, null);
+        assertThat(bad.status()).isEqualTo(422);
+
+        HttpSupport.RawResponse good = http().post("/v1/reviews", DIFF_BODY, T, key, null, null);
+        assertThat(good.status()).isEqualTo(202);
+        assertThat(env(good.body()).get("status").asText()).isEqualTo("queued");
+    }
+
     private void awaitTerminal(String jobId) throws Exception {
         long deadline = System.currentTimeMillis() + 15_000;
         while (System.currentTimeMillis() < deadline) {

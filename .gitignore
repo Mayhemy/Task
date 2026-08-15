@@ -1,6 +1,7 @@
 HELP.md
 target/
 .env
+.nondex/
 NOTES-my-approach.md
 # Held back intentionally — commit this yourself when ready, then remove this line.
 SUBMISSION.md

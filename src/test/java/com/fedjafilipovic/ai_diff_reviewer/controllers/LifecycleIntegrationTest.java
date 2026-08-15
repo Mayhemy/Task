@@ -135,6 +135,23 @@ class LifecycleIntegrationTest {
         assertThat(http().get("/v1/reviews/" + jobId, T).status()).isEqualTo(200);
     }
 
+    @Test
+    void hunkWithNoFileHeaderCompletesWithZeroFindingsNotAnError() throws Exception {
+        // A diff with a valid @@ hunk but no preceding "--- "/"+++ " lines is
+        // still a "valid diff" (has a hunk -> 202, not 422) but DiffParser
+        // never learns a file path for it, so nothing gets reviewed. This
+        // pins the end-to-end shape (done, zero findings, no crash) of the
+        // unit-level behavior in DiffParserTest#hunkWithNoPrecedingFileHeaderYieldsNoLines.
+        String body = "{\"diff\":\"@@ -1 +1 @@\\n+eval(x)\\n\"}";
+        HttpSupport.RawResponse r = http().post("/v1/reviews", body, T, null, null, null);
+        assertThat(r.status()).isEqualTo(202);
+        String jobId = env(r.body()).get("jobId").asText();
+        awaitTerminal(jobId);
+        JsonNode job = env(http().get("/v1/reviews/" + jobId, T).body());
+        assertThat(job.get("status").asText()).isEqualTo("done");
+        assertThat(job.get("findings")).isEmpty();
+    }
+
     private void awaitTerminal(String jobId) throws Exception {
         long deadline = System.currentTimeMillis() + 15_000;
         while (System.currentTimeMillis() < deadline) {

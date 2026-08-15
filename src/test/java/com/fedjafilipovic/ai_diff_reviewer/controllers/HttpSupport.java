@@ -145,6 +145,33 @@ public final class HttpSupport {
     }
 
     /**
+     * POST via chunked transfer encoding (no Content-Length header at all —
+     * HttpURLConnection's setChunkedStreamingMode forces Transfer-Encoding:
+     * chunked). Used to prove the bounded streaming read in ReviewController
+     * enforces MAX_PAYLOAD_BYTES on its own, since the fast declared-length
+     * pre-check has nothing to read here (declared length is unknown/absent).
+     */
+    public RawResponse postBytesChunked(String path, byte[] body, String bearer) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) URI.create(base + path).toURL().openConnection();
+        c.setRequestMethod("POST");
+        c.setDoInput(true);
+        c.setDoOutput(true);
+        c.setInstanceFollowRedirects(false);
+        c.setUseCaches(false);
+        c.setChunkedStreamingMode(8192);
+        if (bearer != null) c.setRequestProperty("Authorization", "Bearer " + bearer);
+        c.setRequestProperty("Content-Type", "application/json");
+        try (OutputStream os = c.getOutputStream()) {
+            os.write(body);
+        }
+        int status = c.getResponseCode();
+        InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+        byte[] respBody = in == null ? new byte[0] : readAll(in);
+        c.disconnect();
+        return new RawResponse(status, respBody, java.util.Map.of());
+    }
+
+    /**
      * Sends a raw HTTP/1.1 POST over a plain socket with a Content-Length
      * header that does NOT match the actual bytes written (a real lying
      * Content-Length, which HttpURLConnection can't produce — it recomputes

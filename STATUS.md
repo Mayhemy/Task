@@ -2,7 +2,7 @@
 
 Detailed project status: build history, the full engineering log with root-cause writeups, test-coverage mapping, and the deployment runbook. `CLAUDE.md` stays intentionally short and holds only the always-relevant conventions; this file is the detailed companion — consulted when auditing for bugs, writing new tests, touching deployment, or picking this project back up after a gap, rather than kept in working memory at all times.
 
-Current state: all 12 implementation steps done, build green, full test suite (171 tests, §7) passing, service deployed and reachable via Docker + ngrok (§8) with real LLM credentials (Groq) configured and the `llm` path verified end to end in both its unconfigured-failure and configured-success modes. A live adversarial sweep against the deployed service (not just the local test suite) is documented in §6.19–§6.21. `README.md` and `SUBMISSION.md` are both written; `SUBMISSION.md` is committed separately, on its own schedule.
+Current state: all 12 implementation steps done, build green, full test suite (180 tests, §7) passing, service deployed and reachable via Docker + ngrok (§8) with real LLM credentials (Groq) configured and the `llm` path verified end to end in both its unconfigured-failure and configured-success modes. Two live adversarial sweeps against the deployed service (not just the local test suite) are documented in §6.19–§6.22, the second run after a package reorganization by architectural role. `README.md` and `SUBMISSION.md` are both written; `SUBMISSION.md` is committed separately, on its own schedule.
 
 ### Status legend
 - ✅ DONE — implemented and verified (code compiles + tests pass + live HTTP smoke tests pass).
@@ -284,32 +284,49 @@ Live-testing the rate-limit boundary (§5 row 29 — `CANDIDATE-TASK.md` explici
 
 **Why this is lower-risk than it first looks:** the failure mode is specific to *many simultaneous brand-new TCP/TLS handshakes*, which is how this test was constructed (separate OS processes, no shared connection pool) but is **not** how most real HTTP client libraries behave by default — Python `requests` Sessions, Node's `http.Agent` with `keepAlive`, Java's `HttpClient`, and most load-testing tools reuse a bounded pool of connections rather than opening one per request, so a grader's "burst 40" is more likely to mean 40 requests multiplexed over a handful of reused connections than 40 fresh handshakes. Not something to be fully confident is safe, but a meaningfully different (and less severe) load pattern than what was just tested.
 
-**Not fixed** — this lives entirely in the free ngrok tunnel's connection handling, outside the application. **Mitigation if it happens during the actual scoring window**: `Restart-Service ngrok` (or `docker restart ai-diff-reviewer` if the app itself were ever implicated, though it wasn't here) recovers it in seconds without losing the stable hostname, since the dev domain reassignment is independent of any individual agent session. Worth a spot-check partway through the 48h window if there's any suspicion the service has gone quiet.
+**Not fixed** — this lives entirely in the free ngrok tunnel's connection handling, outside the application. **Mitigation if it happens during the actual scoring window**: `Restart-Service ngrok` (or `docker restart ai-diff-reviewer` if the app itself were ever implicated, though it wasn't here) recovers it in seconds without losing the stable hostname, since the dev domain reassignment is independent of any individual agent session. Worth a spot-check partway through the scoring window (96h per the actual assessment email) if there's any suspicion the service has gone quiet.
+
+### 6.22 Second live adversarial sweep (post-reorg) — zero new bugs, four gaps closed with pinned tests
+
+After the package reorganization (grouping by architectural role), the image was rebuilt, the container restarted fresh, and ngrok restarted fresh, then ~45 deliberately hostile requests were sent sequentially (not concurrently, to avoid re-triggering §6.21) against the live public URL: auth bypass variants (case, whitespace, duplicate/malformed headers, wrong scheme), malformed/hostile JSON (truncated, trailing comma, duplicate keys, wrong types on every field, `NaN`), Content-Type variants, path-traversal/null-byte/script-tag job IDs, prompt-injection trigger phrases, CRLF/no-final-newline/blank-context/headerless diffs, an oversized body under both a declared and a chunked (undeclared) Content-Length, idempotency conflict/replay-after-failure/whitespace-key/validation-then-retry sequences, a multi-file diff, and a real end-to-end call through the configured Groq LLM provider.
+
+**Result: no new bugs.** Every response was either correct or matched an already-documented, accepted gap (the §6.20 connector-level HTML-instead-of-envelope limitation reproduced identically for null-byte and encoded-traversal paths; jobIds with SQL-injection-style or pathologically long content that don't trip Tomcat's own connector validation correctly reach the app and get a proper 404 envelope). The LLM path returned a real, distinct finding (`no-eval`, not a `MOCK-*` id) that passed the parseFindings severity/category validation from §6.17 — the first confirmation of that pipeline against a live, non-mocked LLM response.
+
+Five behaviors verified live were real gaps in *test coverage*, not in the implementation, and are now pinned:
+- Duplicate JSON keys (`{"diff":"","diff":"<valid>"}`) resolve last-value-wins (Jackson's default) — `AdversarialEdgeCaseIntegrationTest#duplicateJsonKeyLastValueWins`.
+- `maxFindings` as a JSON float or string, not just out-of-range — `AdversarialEdgeCaseIntegrationTest#maxFindingsFloatReturns400` / `#maxFindingsStringReturns400`.
+- An oversized body sent with chunked transfer encoding (no Content-Length for the fast-path guard to see) is still caught by the bounded streaming read — `AdversarialEdgeCaseIntegrationTest#chunkedTransferEncodingOversizedBodyStillReturns413`.
+- A hunk with no preceding `--- `/`+++ ` file header at all (distinct from `+++ /dev/null`, which explicitly nulls the path) is a different code path to the same "nothing to review" outcome — `DiffParserTest#hunkWithNoPrecedingFileHeaderYieldsNoLines` (unit) and `LifecycleIntegrationTest#hunkWithNoFileHeaderCompletesWithZeroFindingsNotAnError` (end to end: `done`, zero findings, no crash).
+- Idempotency-Key semantics under two conditions the existing tests didn't reach: replaying the same key after the job already terminated `failed` returns that *same* failed job rather than re-running (contrast with the no-key ResultCache retry in row 28), and a key attached to a request that fails synchronous validation (422/400, no job ever created) never occupies the slot, so the same key on a follow-up *valid* request succeeds fresh — `IdempotencyCacheIntegrationTest#idempotencyReplayAfterFailureReturnsSameFailedJobNotARetry` / `#idempotencyKeyOnAValidationFailingRequestNeverConsumesTheSlot` / `#whitespaceOnlyIdempotencyKeyTreatedAsAbsent`.
+
+The four request-heavy additions (chunked/oversized, both maxFindings type checks, duplicate-key) were split into a new `AdversarialEdgeCaseIntegrationTest` class with its own rate-limit isolation marker rather than folded into `PostValidationIntegrationTest`, which was already close to that class's 30-token-per-class ceiling — adding them there directly caused exactly the failure it's designed to prevent (four spurious `429`s) on the first attempt, fixed by relocating rather than by touching the pre-existing tests' balance.
 
 ---
 
 ## 7. Testing strategy
 
-171 tests across 18 classes, 0 failures, 0 errors — verified with `./mvnw test` run to completion multiple times in a row (not flaky). Verification followed a staged methodology, each stage deliberately more adversarial than the last: implementation reviewed line-by-line against the contract, the full suite run to completion end to end (not just individual classes in isolation), a dedicated pass specifically hunting for unorthodox/crafted-diff edge cases, and finally a live sweep against the deployed service through the public URL — not localhost — with a clean, grader-equivalent restart beforehand, including inputs deliberately chosen to be awkward for a real server rather than a unit test (unicode/emoji content, connector-level malformed URIs, integer-overflow option values, HEAD/OPTIONS/trailing-slash routing, zero-finding diffs). Each stage closed real issues before moving to the next — the full list is §6.10–§6.13, §6.15–§6.20, plus a handful of test-only fixes (fixtures that encoded incorrect assumptions about HTTP semantics or git diff quoting, and test isolation gaps where shared Spring context state leaked between classes).
+180 tests across 19 classes, 0 failures, 0 errors — verified with `./mvnw test` run to completion multiple times in a row (not flaky). Verification followed a staged methodology, each stage deliberately more adversarial than the last: implementation reviewed line-by-line against the contract, the full suite run to completion end to end (not just individual classes in isolation), a dedicated pass specifically hunting for unorthodox/crafted-diff edge cases, and two separate live sweeps against the deployed service through the public URL — not localhost — each with a clean, grader-equivalent restart beforehand, including inputs deliberately chosen to be awkward for a real server rather than a unit test (unicode/emoji content, connector-level malformed URIs, integer-overflow option values, HEAD/OPTIONS/trailing-slash routing, zero-finding diffs, duplicate JSON keys, chunked transfer encoding, headerless hunks, idempotency-key edge cases). Each stage closed real issues before moving to the next — the full list is §6.10–§6.13, §6.15–§6.20, §6.22, plus a handful of test-only fixes (fixtures that encoded incorrect assumptions about HTTP semantics or git diff quoting, and test isolation gaps where shared Spring context state leaked between classes).
 
 - **Unit:** one crafted diff per mock rule with exact field assertions; parser line-number tests; chunker byte-boundary tests; sort/dedupe with adversarial ordering; MOCK-004 variants.
-  - `diff/DiffParserTest` — §5 rows 12, 15, 18, §6.11.
-  - `diff/ChunkerTest` — §5 rows 19, 20, 21, §6.10.
-  - `provider/MockReviewProviderTest` — §5 rows 13, 14, 16, 17, 18, §6.12, §6.15.
-  - `provider/LlmReviewProviderTest` — §6.17.
-  - `service/JobServiceTest` — finalizeFindings dedupe/sort/truncate; §6.10 regression.
-  - `service/IdempotencyStoreTest`, `service/ResultCacheTest`, `util/HashingTest`, `domain/JobTest`.
+  - `services/DiffParserTest` — §5 rows 12, 15, 18, §6.11.
+  - `services/ChunkerTest` — §5 rows 19, 20, 21, §6.10.
+  - `services/MockReviewProviderTest` — §5 rows 13, 14, 16, 17, 18, §6.12, §6.15.
+  - `services/LlmReviewProviderTest` — §6.17.
+  - `services/JobServiceTest` — finalizeFindings dedupe/sort/truncate; §6.10 regression.
+  - `repositories/IdempotencyStoreTest`, `repositories/ResultCacheTest`, `utils/HashingTest`, `models/JobTest`.
 - **Integration** (`@SpringBootTest`, RANDOM_PORT, `HttpSupport` — a raw `HttpURLConnection`/`Socket` helper, not a higher-level REST client, since exact envelope/header/status assertions need full control): every row of §5.
-  - `web/AuthRoutingIntegrationTest` — rows 1–5.
-  - `web/PostValidationIntegrationTest` — rows 6–11, §6.13, §6.16. `@DirtiesContext(AFTER_CLASS)`.
-  - `web/LifecycleIntegrationTest` — rows 22, 23, §6.10. `@DirtiesContext(AFTER_CLASS)`.
-  - `web/IdempotencyCacheIntegrationTest` — rows 24–28. `@DirtiesContext(AFTER_CLASS)`.
-  - `web/RateLimitConcurrencyIntegrationTest` — rows 29, 30, against the real fixed 30/min `AppLimits` constant. `@DirtiesContext(AFTER_EACH_TEST_METHOD)`.
-  - `web/SseIntegrationTest` — rows 32–34. `@DirtiesContext(AFTER_CLASS)`.
-  - `web/LlmIntegrationTest` — row 31.
+  - `controllers/AuthRoutingIntegrationTest` — rows 1–5.
+  - `controllers/PostValidationIntegrationTest` — rows 6–11, §6.13, §6.16. `@DirtiesContext(AFTER_CLASS)`.
+  - `controllers/LifecycleIntegrationTest` — rows 22, 23, §6.10. `@DirtiesContext(AFTER_CLASS)`.
+  - `controllers/IdempotencyCacheIntegrationTest` — rows 24–28. `@DirtiesContext(AFTER_CLASS)`.
+  - `controllers/RateLimitConcurrencyIntegrationTest` — rows 29, 30, against the real fixed 30/min `AppLimits` constant. `@DirtiesContext(AFTER_EACH_TEST_METHOD)`.
+  - `controllers/SseIntegrationTest` — rows 32–34. `@DirtiesContext(AFTER_CLASS)`.
+  - `controllers/LlmIntegrationTest` — row 31.
+  - `controllers/AdversarialEdgeCaseIntegrationTest` — §6.22. `@DirtiesContext(AFTER_EACH_TEST_METHOD)`, its own rate-limit isolation marker (kept out of `PostValidationIntegrationTest`'s budget — see §6.22).
+  - Package reorg (config/domain/diff/provider/service/util/web → bootstrap/configuration/controllers/dto/exceptions/filters/models/repositories/services/utils, grouped by architectural role) landed after all of the above was verified; it moved files and fixed imports only — the row/section references above still describe the same tests under their new package paths.
 - **Why `@DirtiesContext` matters**: `RateLimitFilter`'s `TokenBucket` is a Spring singleton, and `@SpringBootTest` caches contexts by configuration signature — several classes share the identical `properties = "app.bearer-token=tok"`, so without isolation Spring silently reuses one context (and one live bucket) across all of them. Combined POST volume can spuriously exceed 30/min and fail unrelated assertions.
 - Tests never require real environment vars — set via `properties = ...` on the test annotation.
-
+- **Flaky-test detection (NonDex)**: `edu.illinois:nondex-maven-plugin:2.2.1` is registered in `pom.xml` but not bound to any lifecycle phase, so `./mvnw test`/`package` are unaffected — it only runs on explicit invocation: `./mvnw nondex:nondex` (default 3 shuffled seeds) or `./mvnw nondex:nondex -DnondexRuns=N` for more. It reruns the whole suite with randomized `HashMap`/`HashSet` iteration order (JDK collections whose iteration order is unspecified by contract) to surface tests that accidentally depend on that order rather than on the documented `path → line → ruleId` sort or an explicit assertion. Run twice: once at the default 3 seeds, once at 10 — **11 total runs (1,980 individual test executions), 0 failures in any configuration.** No hidden ordering assumptions found, so nothing needed fixing or documenting as "expected flaky." `.nondex/` (its scratch output directory) is gitignored.
 ---
 
 ## 8. Deployment — Docker (D: drive) + ngrok static domain
@@ -349,7 +366,7 @@ The service runs containerized rather than as a bare jar: `docker run --restart 
    docker run -d --name ai-diff-reviewer --restart unless-stopped \
      --env-file .env -p 8080:8080 ai-diff-reviewer:1.0.0
    ```
-   `--restart unless-stopped` = the actual persistence mechanism for the 48h window.
+   `--restart unless-stopped` = the actual persistence mechanism for the scoring window (`CANDIDATE-TASK.md` says 48h; the actual assessment email for this application specifies **96h** — the longer figure is what the deployment plan targets).
 4. **Tunnel: ngrok.** The account already had a **permanent free "dev domain"** auto-assigned (`https://armless-dispersed-spinout.ngrok-free.dev` — dashboard confirms "This dev domain is yours forever"), zero cost, zero domain purchase. Config lives at `C:\ProgramData\ngrok\ngrok.yml` — **not** `%LOCALAPPDATA%\ngrok\ngrok.yml`, which only resolves for the interactive user via MSIX package virtualization; the Windows *service* runs as `LocalSystem` and crashes on start with no useful log if pointed there:
    ```yaml
    version: "3"

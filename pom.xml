@@ -53,6 +53,17 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!-- Flaky-test detection: reruns the suite with randomized
+			     HashMap/HashSet iteration order to surface tests that
+			     silently depend on unspecified ordering. Not bound to any
+			     lifecycle phase, invoked explicitly via
+			     `./mvnw nondex:nondex`; never runs as part of a normal
+			     `test`/`package` build. See STATUS.md §7 for results. -->
+			<plugin>
+				<groupId>edu.illinois</groupId>
+				<artifactId>nondex-maven-plugin</artifactId>
+				<version>2.2.1</version>
+			</plugin>
 		</plugins>
 	</build>
 
