@@ -9,6 +9,7 @@ import com.fedjafilipovic.ai_diff_reviewer.exceptions.ApiExceptions.PayloadTooLa
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -76,7 +77,21 @@ public class ApiExceptionHandler {
         return envelope(HttpStatus.INTERNAL_SERVER_ERROR, "internal", "Unexpected error");
     }
 
+    /**
+     * The Content-Type is set explicitly, and that is load-bearing: it makes
+     * Spring skip Accept-header content negotiation for this response
+     * entirely. Without it, a request carrying an Accept header that excludes
+     * JSON — most importantly {@code Accept: text/event-stream}, which is
+     * exactly what a correct SSE client sends to /stream — finds no writable
+     * converter for the envelope, and the resulting
+     * HttpMediaTypeNotAcceptableException replaces the real status with a 500.
+     * A 404 for an unknown jobId is scored; losing it to negotiation would be
+     * an expensive way to be technically right. The envelope is defined as
+     * JSON by the contract, so we always send JSON and never ask.
+     */
     private static ResponseEntity<ErrorEnvelope> envelope(HttpStatus status, String code, String message) {
-        return ResponseEntity.status(status).body(ErrorEnvelope.of(code, message));
+        return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ErrorEnvelope.of(code, message));
     }
 }

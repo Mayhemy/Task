@@ -18,6 +18,14 @@ import java.util.regex.Pattern;
  * added ('+') lines advance it; removed ('-') lines do not. This is what makes
  * file-boundary chunking exact — splitting between files can never shift a
  * line number.
+ *
+ * Header disambiguation: "+++ " and "--- " are only file markers in the right
+ * position, because inside a hunk they are also perfectly ordinary content.
+ * Adding a line that itself begins "++ " produces the raw line "+++ ...", and
+ * removing one beginning "-- " produces "--- ...". Two positional facts settle
+ * it, and both come straight from the unified-diff format: the markers always
+ * appear as an adjacent --- / +++ pair, and a marker pair never appears in the
+ * middle of a hunk body. See {@code isInHunk}.
  */
 @Component
 public class DiffParser {
@@ -30,10 +38,24 @@ public class DiffParser {
      * @throws InvalidDiffException if the text contains no hunk headers
      */
     public List<DiffLine> parse(String diffText) {
+        return parse(diffText, true);
+    }
+
+    /**
+     * @param requireHunk whether a diff with no @@ header at all is an error.
+     *        True for the whole submitted diff (that is the 422 gate: text with
+     *        no hunk anywhere is not a diff). False for an individual chunk —
+     *        a chunk may legitimately contain only hunkless file entries (a
+     *        pure rename, a mode change, "Binary files ... differ"), and
+     *        failing the job over one would be wrong. See STATUS.md §6.26.
+     */
+    public List<DiffLine> parse(String diffText, boolean requireHunk) {
         List<DiffLine> out = new ArrayList<>();
         String currentPath = null;
         int newLine = 0;
         boolean sawHunk = false;
+        boolean inHunk = false;
+        boolean prevWasOldMarker = false;
 
         // split("\n", -1) yields a trailing "" artifact whenever diffText ends
         // with '\n' (virtually always). Now that a genuinely empty line is
@@ -43,24 +65,45 @@ public class DiffParser {
         // (a real blank last line, then the terminator) still keeps that real
         // blank line: only the final terminator is removed.
         String body = diffText.endsWith("\n") ? diffText.substring(0, diffText.length() - 1) : diffText;
-        for (String raw : body.split("\n", -1)) {
+        String[] raws = body.split("\n", -1);
+        for (int i = 0; i < raws.length; i++) {
             // CRLF diffs: strip one trailing \r before any classification,
             // otherwise it leaks into paths and evidence strings.
-            String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
+            String line = strip(raws[i]);
+            String next = i + 1 < raws.length ? strip(raws[i + 1]) : "";
 
-            // +++ must be checked BEFORE the generic '+' branch.
-            if (line.startsWith("+++ ")) {
-                currentPath = parsePath(line.substring(4));
+            // Old-file marker: either we're between hunks (nothing to confuse
+            // it with), or the very next line is its +++ partner.
+            if (line.startsWith("--- ") && (!inHunk || next.startsWith("+++ "))) {
+                prevWasOldMarker = true;
+                inHunk = false;
                 continue;
             }
-            if (line.startsWith("--- ")) {
-                continue; // old-file marker, ignored
+            // New-file marker: its --- partner just went by, or we're between
+            // hunks. Otherwise this is a "++ ..." content line and falls
+            // through to the generic '+' branch below.
+            if (line.startsWith("+++ ") && (prevWasOldMarker || !inHunk)) {
+                currentPath = parsePath(line.substring(4));
+                prevWasOldMarker = false;
+                inHunk = false;
+                continue;
             }
+            prevWasOldMarker = false;
+
+            // A hunk header is never ambiguous: content lines always carry a
+            // +/-/space marker, so nothing inside a hunk can start with "@@ -".
             Matcher m = HUNK_HEADER.matcher(line);
             if (m.find()) {
                 newLine = Integer.parseInt(m.group(1));
                 sawHunk = true;
+                inHunk = true;
                 continue;
+            }
+            // Anything not shaped like a hunk line ("diff --git", "index",
+            // "new file mode", "Binary files ... differ") ends the hunk.
+            // "\ No newline at end of file" is excluded: it appears inside one.
+            if (!isHunkShaped(line)) {
+                inHunk = false;
             }
             if (currentPath == null) {
                 continue; // deleted file (+++ /dev/null) or preamble — nothing to review
@@ -86,10 +129,22 @@ public class DiffParser {
             // "\ No newline at end of file" and anything else: no counter change.
         }
 
-        if (!sawHunk) {
+        if (requireHunk && !sawHunk) {
             throw new InvalidDiffException("diff contains no hunks");
         }
         return out;
+    }
+
+    /** One trailing \r removed, so CRLF diffs classify identically to LF ones. */
+    private static String strip(String raw) {
+        return raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
+    }
+
+    /** Could this line be part of a hunk body? */
+    private static boolean isHunkShaped(String line) {
+        return line.isEmpty()
+                || line.startsWith("+") || line.startsWith("-") || line.startsWith(" ")
+                || line.startsWith("\\");
     }
 
     /**

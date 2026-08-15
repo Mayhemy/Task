@@ -3,7 +3,6 @@ package com.fedjafilipovic.ai_diff_reviewer.controllers;
 import com.fedjafilipovic.ai_diff_reviewer.models.Job;
 import com.fedjafilipovic.ai_diff_reviewer.services.JobService;
 import com.fedjafilipovic.ai_diff_reviewer.exceptions.ApiExceptions.NotFoundException;
-import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -26,7 +25,16 @@ public class StreamController {
         this.jobService = jobService;
     }
 
-    @GetMapping(value = "/v1/reviews/{jobId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    /**
+     * Deliberately no {@code produces = text/event-stream}. Declaring it makes
+     * the Accept header part of the routing decision, so a client asking for
+     * anything else stops matching this handler at all and gets a negotiation
+     * failure instead of the stream. SseEmitter sets Content-Type:
+     * text/event-stream on the response by itself, so the declaration bought
+     * nothing and cost us a whole class of client. Pinned by
+     * SseIntegrationTest.streamContentTypeIsEventStream.
+     */
+    @GetMapping("/v1/reviews/{jobId}/stream")
     public SseEmitter stream(@PathVariable String jobId) {
         Job job = jobService.getJob(jobId); // throws NotFoundException (404) if unknown
         SseEmitter emitter = new SseEmitter(0L); // no server-side timeout

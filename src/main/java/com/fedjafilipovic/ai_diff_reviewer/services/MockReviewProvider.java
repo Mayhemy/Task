@@ -128,6 +128,18 @@ public class MockReviewProvider implements ReviewProvider {
             boolean closed = false;
             while (j < lines.size() && depth > 0) {
                 DiffLine next = lines.get(j);
+                // Never run the brace scan past the end of the file the catch
+                // is in. A hunk shows only a few lines of context, so an added
+                // "catch (e) {" whose closing brace falls outside the hunk
+                // leaves the scan open-ended — and the next file's lines would
+                // then decide whether it "closes". That makes the result depend
+                // on which files happen to share a chunk, and the contract
+                // requires a chunked scan to match an unchunked one exactly.
+                // Stopping at the boundary makes an unclosed block simply
+                // unclosed, identically either way. See STATUS.md §6.25.
+                if (!next.path().equals(dl.path())) {
+                    break;
+                }
                 if (next.type() == LineType.REMOVED) {
                     j++;
                     continue;

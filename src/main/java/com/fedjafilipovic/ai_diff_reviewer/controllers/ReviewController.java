@@ -10,6 +10,7 @@ import com.fedjafilipovic.ai_diff_reviewer.exceptions.ApiExceptions.InvalidJsonE
 import com.fedjafilipovic.ai_diff_reviewer.exceptions.ApiExceptions.PayloadTooLargeException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -54,7 +55,9 @@ public class ReviewController {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("jobId", job.getId());
         body.put("status", job.getStatus().toJson());
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(body);
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
     }
 
     @GetMapping("/v1/reviews/{jobId}")
@@ -68,7 +71,7 @@ public class ReviewController {
         if (job.getErrorMessage() != null) {
             body.put("error", Map.of("code", "internal", "message", job.getErrorMessage()));
         }
-        return ResponseEntity.ok(body);
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(body);
     }
 
     // ---- body reading & validation ----

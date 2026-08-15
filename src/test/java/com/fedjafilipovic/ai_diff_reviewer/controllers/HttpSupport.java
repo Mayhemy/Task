@@ -39,6 +39,29 @@ public final class HttpSupport {
         return request("GET", path, null, bearer, null, null, null);
     }
 
+    /**
+     * GET with an explicit Accept header. Error envelopes must survive content
+     * negotiation: a client asking for something other than JSON still has to
+     * get the real status code and the envelope, not a negotiation failure.
+     */
+    public RawResponse getWithAccept(String path, String bearer, String accept) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) URI.create(base + path).toURL().openConnection();
+            c.setRequestMethod("GET");
+            c.setInstanceFollowRedirects(false);
+            c.setUseCaches(false);
+            if (bearer != null) c.setRequestProperty("Authorization", "Bearer " + bearer);
+            c.setRequestProperty("Accept", accept);
+            int status = c.getResponseCode();
+            InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+            byte[] respBody = in == null ? new byte[0] : readAll(in);
+            c.disconnect();
+            return new RawResponse(status, respBody, Map.of());
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     public RawResponse request(String method, String path, String body, String bearer,
                                String idempotencyKey, String contentType, String contentLength) {
         try {

@@ -92,6 +92,83 @@ class AdversarialEdgeCaseIntegrationTest {
         assertThat(job.get("findings").get(0).get("ruleId").asText()).isEqualTo("MOCK-001");
     }
 
+    // ---- error envelopes must survive content negotiation (STATUS.md 6.27) ----
+
+    @Test
+    void unknownJobStreamReturns404EnvelopeToAnSseClient() throws Exception {
+        // An SSE client sends Accept: text/event-stream. The handler declares
+        // it produces exactly that, so a JSON envelope has no acceptable
+        // converter — and Spring turned the 404 into a 500 until the envelope
+        // started pinning its own Content-Type. Any real client polling for a
+        // job that never existed would have hit this.
+        HttpSupport.RawResponse r = http().getWithAccept("/v1/reviews/nope/stream", T, "text/event-stream");
+        assertThat(r.status()).isEqualTo(404);
+        assertThat(env(r.body()).get("error").get("code").asText()).isEqualTo("not_found");
+    }
+
+    @Test
+    void errorEnvelopeIgnoresAnAcceptHeaderThatExcludesJson() throws Exception {
+        for (String accept : new String[]{"application/xml", "text/plain", "text/event-stream"}) {
+            HttpSupport.RawResponse r = http().getWithAccept("/v1/reviews/nope", T, accept);
+            assertThat(r.status()).as("Accept: %s", accept).isEqualTo(404);
+            assertThat(env(r.body()).get("error").get("code").asText()).isEqualTo("not_found");
+        }
+    }
+
+    @Test
+    void successResponsesAlsoIgnoreAnAcceptHeaderThatExcludesJson() throws Exception {
+        // Same root cause on the 2xx side: /health is defined by the contract
+        // as returning 200, full stop, and letting an Accept header turn the
+        // liveness probe into a 500 is indefensible. This service speaks JSON
+        // and only JSON, so it states that rather than negotiating it.
+        for (String path : new String[]{"/health", "/spec"}) {
+            HttpSupport.RawResponse r = http().getWithAccept(path, null, "application/xml");
+            assertThat(r.status()).as("%s", path).isEqualTo(200);
+            assertThat(env(r.body()).isObject()).isTrue();
+        }
+    }
+
+    @Test
+    void streamStillServesAClientAskingForSomethingOtherThanEventStream() throws Exception {
+        HttpSupport.RawResponse posted = http().post("/v1/reviews",
+                "{\"diff\":\"" + VALID_DIFF + "\"}", T, null, null, null);
+        String jobId = env(posted.body()).get("jobId").asText();
+        awaitDone(jobId);
+        // The mapping no longer treats Accept as part of the routing decision.
+        HttpSupport.RawResponse r =
+                http().getWithAccept("/v1/reviews/" + jobId + "/stream", T, "application/xml");
+        assertThat(r.status()).isEqualTo(200);
+        assertThat(new String(r.body(), java.nio.charset.StandardCharsets.UTF_8)).contains("event:done");
+    }
+
+    // ---- chunk-level parsing (STATUS.md 6.26) ----
+
+    @Test
+    void diffWhoseTrailingFileHasNoHunksStillCompletes() throws Exception {
+        // Big enough to force a second chunk, and the last file is a pure
+        // rename with no @@ at all. That chunk parses to zero lines; it used
+        // to throw and fail the whole job with "internal error".
+        StringBuilder diff = new StringBuilder();
+        diff.append("diff --git a/big.js b/big.js\\n--- a/big.js\\n+++ b/big.js\\n@@ -1,1 +1,3000 @@\\n");
+        for (int i = 0; i < 3000; i++) {
+            diff.append("+// filler ").append(i).append(" xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n");
+        }
+        diff.append("+eval(danger)\\n");
+        diff.append("diff --git a/old.txt b/new.txt\\nsimilarity index 100%\\nrename from old.txt\\nrename to new.txt\\n");
+
+        HttpSupport.RawResponse r = http().post("/v1/reviews",
+                "{\"diff\":\"" + diff + "\"}", T, null, null, null);
+        assertThat(r.status()).isEqualTo(202);
+        String jobId = env(r.body()).get("jobId").asText();
+        awaitDone(jobId);
+
+        JsonNode job = env(http().get("/v1/reviews/" + jobId, T).body());
+        assertThat(job.get("status").asText()).isEqualTo("done");
+        assertThat(job.get("usage").get("chunks").asInt()).isGreaterThanOrEqualTo(2);
+        assertThat(job.get("findings").size()).isEqualTo(1);
+        assertThat(job.get("findings").get(0).get("ruleId").asText()).isEqualTo("MOCK-001");
+    }
+
     private void awaitDone(String jobId) throws Exception {
         long deadline = System.currentTimeMillis() + 10_000;
         while (System.currentTimeMillis() < deadline) {

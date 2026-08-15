@@ -80,8 +80,10 @@ curl -X POST http://localhost:8080/v1/reviews \
 100}`. Optional `Idempotency-Key` header: a retried request with the same
 key and byte-identical body returns the same `jobId` instead of creating a
 new job; the same key with a different body returns `409`. Independently of
-any key, a byte-identical body submitted again reuses the already-computed
-result (`usage.cacheHit: true`) rather than redoing the work.
+any key, resubmitting the same `{diff, options}` reuses the already-computed
+result (`usage.cacheHit: true`) rather than redoing the work — the cache is
+keyed on those values, so a resubmission still hits it if the JSON was
+formatted differently or carried extra ignored fields.
 
 ### `GET /v1/reviews/{jobId}`
 
@@ -131,11 +133,16 @@ docker run -d --name xsolla-task --restart unless-stopped \
 ./mvnw test
 ```
 
-Unit tests cover the diff parser, chunker, and every mock rule (trigger +
-decoy cases) in isolation. Integration tests spin up the full service
-(`@SpringBootTest`, random port) and exercise auth, validation precedence,
-lifecycle, idempotency/caching, rate limiting, concurrency, and SSE replay
-against real HTTP calls.
+197 tests. Unit tests cover the diff parser, chunker, and every mock rule
+(trigger + decoy cases) in isolation. Integration tests spin up the full
+service (`@SpringBootTest`, random port) and exercise auth, validation
+precedence, lifecycle, idempotency/caching, rate limiting, concurrency,
+content negotiation, and SSE replay against real HTTP calls.
+
+`./mvnw nondex:nondex` additionally reruns the suite with randomized JDK
+collection iteration order, to prove the documented `path → line → ruleId`
+finding order comes from the explicit comparator rather than from a
+coincidence of `HashMap` iteration.
 
 ## Project layout
 

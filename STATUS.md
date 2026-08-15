@@ -2,7 +2,11 @@
 
 Detailed project status: build history, the full engineering log with root-cause writeups, test-coverage mapping, and the deployment runbook. `CLAUDE.md` stays intentionally short and holds only the always-relevant conventions; this file is the detailed companion — consulted when auditing for bugs, writing new tests, touching deployment, or picking this project back up after a gap, rather than kept in working memory at all times.
 
-Current state: all 12 implementation steps done, build green, full test suite (184 tests, §7) passing, service deployed and reachable via Docker + ngrok (§8) with real LLM credentials (Groq) configured and the `llm` path verified end to end in both its unconfigured-failure and configured-success modes. Two live adversarial sweeps against the deployed service (not just the local test suite) are documented in §6.19–§6.22, the second run after a package reorganization by architectural role, followed by a hardening pass (§6.23: constant-time auth check, WWW-Authenticate header, LLM retries, per-caller rate limiting, `maxFindings: 0`). `README.md` and `SUBMISSION.md` are both written; `SUBMISSION.md` is committed separately, on its own schedule.
+Current state: all 12 implementation steps done, build green, full test suite (197 tests, §7) passing, service deployed and reachable via Docker + ngrok (§8) with real LLM credentials (Groq) configured and the `llm` path verified end to end in both its unconfigured-failure and configured-success modes. Two live adversarial sweeps against the deployed service (not just the local test suite) are documented in §6.19–§6.22, the second run after a package reorganization by architectural role, followed by a hardening pass (§6.23: constant-time auth check, WWW-Authenticate header, LLM retries, per-caller rate limiting, `maxFindings: 0`).
+
+**Most recent pass (§6.24–§6.28) — a fresh spec-vs-implementation audit that found five real bugs**, four of them in code paths every existing test had happened to miss. The largest: any request carrying an `Accept` header that excludes JSON turned every error envelope into a `500`, including `GET /v1/reviews/{unknown}/stream` with `Accept: text/event-stream` — what a *correct* SSE client sends — and `GET /health` with `Accept: application/xml`. Also fixed: `+++`/`---` content lines inside a hunk misparsed as file headers (wrong path, wrong line numbers, and silent finding loss in the chunker), MOCK-004's brace scan running past a file boundary (making chunked and unchunked scans disagree — a directly scored property), and a hunkless chunk failing the whole job. §6.14, previously a documented limitation, is now actually fixed.
+
+`README.md` and `SUBMISSION.md` are both written; `SUBMISSION.md` is committed separately, on its own schedule.
 
 ### Status legend
 - ✅ DONE — implemented and verified (code compiles + tests pass + live HTTP smoke tests pass).
@@ -13,15 +17,16 @@ Current state: all 12 implementation steps done, build green, full test suite (1
 - Step 1 pom.xml — ✅ DONE.
 - Step 2 AppLimits — ✅ DONE. (Sub: ✅ /spec-vs-behavior cross-check test in place, `AuthRoutingIntegrationTest.specNoTokenReturns200`.)
 - Step 3 domain model — ✅ DONE. (Sub: ✅ domain unit tests in place, `JobTest`.)
-- Step 4 DiffParser — ✅ DONE. (Sub: ✅ parser unit tests in place: CRLF, multi-hunk, /dev/null both ways, `\ No newline`, git-quoted path, b/ prefix, tab timestamp, short-form `@@ -1 +1 @@`, no-hunks 422, blank context line without leading space. Fixed a real bug where blank context lines without a leading space silently dropped the new-file counter — see §6.11.)
-- Step 5 Chunker — ✅ DONE. (Sub: ✅ chunker tests in place: byte-vs-char sizing, multi-file packing, oversized single file. Fixed the `usage.inputBytes` off-by-one at its root cause in `Chunker.splitByFile`, not just worked around at the call site — see §6.10.)
-- Step 6 MockReviewProvider — ✅ DONE. (Sub: ✅ per-rule unit tests + decoy tests + MOCK-004 variants in place. Fixed a MOCK-004 false-positive on multi-line catch bodies — see §6.12.)
+- Step 4 DiffParser — ✅ DONE. (Sub: ✅ parser unit tests in place: CRLF, multi-hunk, /dev/null both ways, `\ No newline`, git-quoted path, b/ prefix, tab timestamp, short-form `@@ -1 +1 @@`, no-hunks 422, blank context line without leading space, `+++`/`---` content lines inside a hunk, lenient chunk parse. Fixed a real bug where blank context lines without a leading space silently dropped the new-file counter — see §6.11 — and later a second where content lines imitating file headers corrupted the path and every line number after them — see §6.25.)
+- Step 5 Chunker — ✅ DONE. (Sub: ✅ chunker tests in place: byte-vs-char sizing, multi-file packing, oversized single file, spoofed vs. real `--- ` boundary. Fixed the `usage.inputBytes` off-by-one at its root cause in `Chunker.splitByFile`, not just worked around at the call site — see §6.10 — and the marker-spoofing split that silently lost findings, previously accepted as a limitation — see §6.14/§6.25.)
+- Step 6 MockReviewProvider — ✅ DONE. (Sub: ✅ per-rule unit tests + decoy tests + MOCK-004 variants in place. Fixed a MOCK-004 false-positive on multi-line catch bodies — see §6.12 — and a brace scan that crossed file boundaries, making chunked and unchunked scans disagree — see §6.26.)
 - Step 7 LlmReviewProvider — ✅ DONE. (Sub: ✅ llm unconfigured-failure integration test in place; configured-success path run end to end against real Groq credentials — see §6.17.)
 - Step 8 JobService/lifecycle — ✅ DONE. (Sub: ✅ lifecycle + catch-all + 30s-budget tests in place.)
 - Step 9 IdempotencyStore/ResultCache — ✅ DONE. (Sub: ✅ atomicity, cacheHit, conflict, failed-not-cached tests in place.)
-- Step 10 web layer — ✅ DONE. (Sub: ✅ precedence 401→429→413→400→422, payload boundaries, envelope-on-all-non-2xx tests in place. Fixed a precedence bug where `options` was validated after `diff`, contradicting the documented 400→422 order — see §6.13.)
-- Step 11 SSE — ✅ DONE. (Sub: ✅ live sequence, post-completion replay byte-identical, failed-job replay tests in place.)
-- Step 12 remaining endpoints — ✅ DONE. (Sub: ✅ /health, /spec, GET job, unknown-route envelope tests in place.)
+- Step 9 IdempotencyStore/ResultCache — see also §6.29: the cache key moved from raw body bytes to the canonical `(provider, maxFindings, diff)` tuple, reversing an earlier documented decision.
+- Step 10 web layer — ✅ DONE. (Sub: ✅ precedence 401→429→413→400→422, payload boundaries, envelope-on-all-non-2xx tests in place. Fixed a precedence bug where `options` was validated after `diff`, contradicting the documented 400→422 order — see §6.13 — and later that "all non-2xx" silently excluded any request whose `Accept` header didn't admit JSON, which returned 500 instead — see §6.27.)
+- Step 11 SSE — ✅ DONE. (Sub: ✅ live sequence, post-completion replay byte-identical, failed-job replay tests in place, plus unknown-jobId-with-SSE-Accept and non-event-stream-Accept cases — §6.27.)
+- Step 12 remaining endpoints — ✅ DONE. (Sub: ✅ /health, /spec, GET job, unknown-route envelope tests in place, plus non-JSON `Accept` on both — §6.27.)
 
 ---
 
@@ -169,6 +174,7 @@ Each row is a probe the scoring rubric implies; each maps to specific test class
 3. `/health`, `/spec` with no token (or garbage token) → 200.
 4. Unknown path → non-2xx **with the envelope**.
 5. Wrong method on a route → envelope, never a bare 405.
+5b. **Any `Accept` header** (`application/xml`, `text/plain`, `text/event-stream`) → the real status code and the envelope, never a negotiation failure. Applies to 2xx too: `/health` and `/spec` stay 200 (§6.27).
 
 ### POST validation (precedence: 401 → 429 → 413 → 400 → 422)
 6. Body of exactly 1,048,576 bytes → accepted; 1,048,577 → 413. Test with and without a truthful `Content-Length`.
@@ -191,13 +197,16 @@ Each row is a probe the scoring rubric implies; each maps to specific test class
 19. Many small files totaling > 64 KiB → `usage.chunks` ≥ 2, byte-identical findings to unchunked.
 20. Single file > 64 KiB → one oversized chunk, no mid-file split.
 21. Multi-byte UTF-8 near chunk boundaries → byte-based sizing.
+21b. A chunk containing only a hunkless file entry (pure rename / mode change / binary) → scans to zero findings, job still reaches `done` (§6.28).
+21c. Content lines that imitate structural markers (`+++`/`---` produced by adding a `++ ` line or removing a `-- ` line) → no mis-split, no lost findings (§6.25).
+21d. An added `catch (e) {` whose closing brace is outside the hunk → same MOCK-004 answer chunked and unchunked (§6.26).
 
 ### Lifecycle, caching, idempotency
 22. POST → poll → `done` well under 30s for a ≤64 KiB diff.
 23. GET/stream unknown jobId → 404 envelope.
 24. Same key + identical body twice → same `jobId`, real status.
 25. Same key + different body → 409.
-26. Identical body, different/no key → different `jobId`, `cacheHit: true`.
+26. Identical body, different/no key → different `jobId`, `cacheHit: true`. Semantically identical but byte-different body (reordered JSON keys, different indentation) → also `cacheHit: true` (§6.29).
 27. Concurrent identical bodies → exactly one does the work. Concurrent same-key → exactly one job.
 28. Failed llm job NOT cached — resubmit re-runs.
 
@@ -210,6 +219,8 @@ Each row is a probe the scoring rubric implies; each maps to specific test class
 32. Live connection → ordered sequence, closes after `done`.
 33. Connect after completion, twice → byte-identical replay.
 34. Failed job → replays through terminal `status:failed`.
+35. Unknown jobId on `/stream` with `Accept: text/event-stream` → 404 envelope, not 500 (§6.27).
+36. Valid job on `/stream` with a non-event-stream `Accept` → still served, still `Content-Type: text/event-stream` (§6.27).
 
 ---
 
@@ -245,10 +256,12 @@ Strict unified-diff format requires even a blank context line to carry a leading
 
 `ReviewController.create()` called `extractDiff` (422) before `extractOptions` (400), so a request invalid both ways returned 422, the reverse of `400 → 422`. **Fix:** `options` validated first. Pinned by `PostValidationIntegrationTest.invalidOptionsPrecedesInvalidDiff`.
 
-### 6.14 Documented limitation (not fixed) — Chunker's non-git `"--- "` marker can be spoofed by content
-**In short:** if a diff isn't git-style, file boundaries are found by looking for lines starting with `"--- "` — so a piece of *content* that happens to start the same way (a Markdown horizontal rule, say) could be misread as a new file. Left as-is; explained below.
+### 6.14 ~~Documented limitation (not fixed)~~ — **now fixed, see §6.25** — Chunker's non-git `"--- "` marker can be spoofed by content
+**In short:** if a diff isn't git-style, file boundaries are found by looking for lines starting with `"--- "` — so a piece of *content* that happens to start the same way could be misread as a new file. Originally accepted as a limitation; **fixed in §6.25** once it turned out to cause silent finding loss, not just a cosmetic mis-split.
 
-For a non-git diff, file boundaries are detected via `line.startsWith("--- ")`. A content line legitimately starting with literal `"--- "` (a Markdown rule, a YAML fence) would be misread as a boundary, risking a mid-file split over 64 KiB. Accepted as-is: graders overwhelmingly use git-style diffs, and a proper fix needs full `---`/`+++` pairing state tracking — more invasive than the benefit justifies.
+For a non-git diff, file boundaries were detected via `line.startsWith("--- ")`. A content line legitimately starting with literal `"--- "` would be misread as a boundary, risking a mid-file split over 64 KiB. Originally accepted as-is on the reasoning that graders overwhelmingly use git-style diffs and a proper fix needs `---`/`+++` pairing state — more invasive than the benefit justified.
+
+**That assessment was wrong on the severity.** The mis-split doesn't merely produce an odd chunk: the second half of a split file arrives at the parser with no `+++` header above it, so `currentPath` stays null and **every finding in it is silently dropped** — a direct hit on the scored "no losses" property. And the trigger isn't exotic: a removed line whose own content starts with `-- ` renders as the raw line `--- ...`. The pairing fix also turned out to be three lines, not the invasive rewrite anticipated. See §6.25.
 
 ### 6.15 Bug found & fixed — MOCK-004's `catch` regex had no word boundary
 **In short:** a function named `mycatch(...)` was falsely flagged as a swallowed-exception `catch` block, because the regex matched the substring `catch` anywhere, not just as its own word.
@@ -341,16 +354,160 @@ Everything above gets the contract exactly right. This pass went back through it
 
 None of this changes any documented behavior a grader would be checking — `/spec` still reports the same numbers, the 30/min sustained rate still works exactly the same for a single token, and every existing test kept passing without modification except the one that pinned the old (now-wrong) `maxFindings: 0 → 400` behavior, which got rewritten to assert the new, correct one. Full suite: 184 tests, run clean twice, plus 6 more NonDex passes (1 clean + 5 shuffled seeds) with zero failures.
 
+### 6.24 A fresh spec-vs-implementation audit — five real bugs, and the method that found them
+
+Everything above was verified. This pass asked a different question: not "does each requirement have a test" but **"which requirements are equalities between two paths, and where does each path get its inputs from?"** — plus the blunter "what request shapes have I simply never sent?"
+
+Both framings paid. The five bugs below (§6.25–§6.28, plus the MOCK-004 one folded into §6.25's section) were found in roughly forty minutes of probing, and **not one of them was caught by the 184 existing tests**, because every existing test used the default `Accept: */*`, well-formed git-style diffs, and hunks whose braces balance.
+
+The specific reasoning that produced each:
+- *"Every existing test sends the same headers. Which header have I never varied?"* → `Accept` → §6.27, the worst of the five.
+- *"Which characters can a diff's own content produce that look like structural markers?"* → an added line starting `++ ` renders as `+++ `; a removed line starting `-- ` renders as `--- ` → §6.25.
+- *"Which rule's answer depends on lines other than the one it's examining?"* → only MOCK-004 → and chunking splits the line list → §6.26.
+- *"The 422 gate is 'no hunks anywhere'. Is that gate applied anywhere it shouldn't be?"* → yes, per chunk → §6.28.
+
+Verification for all five was done the same way: write a throwaway probe that prints the actual behaviour (raw sockets for the HTTP ones, direct component calls for the parser/chunker ones), confirm the bug empirically **before** writing any fix, fix, re-run the probe, then convert the probe into a permanent regression test and delete the scratch. Every claim below is something that was observed, not inferred.
+
+### 6.25 Bug found & fixed — `+++`/`---` content lines inside a hunk were misparsed as file headers
+**In short:** a diff that *adds* a line whose own text starts with `++ ` (or removes one starting with `-- `) produces a raw line that looks exactly like a file header. The parser believed it — corrupting the file path for the rest of that file, swallowing a real added line, and shifting every line number after it. The same ambiguity in the chunker silently dropped findings.
+
+**The collision.** A file header is `+++ b/path`. An added line whose content starts with `++ ` is *also* rendered `+++ ...`, because the `+` marker is prepended to content that already begins with `++`. Observed directly:
+
+```
+input:  @@ -1,0 +1,3 @@ / "+++ this is content, not a header" / "+eval(danger)" / "+console.log(x)"
+
+before: ADDED line=1 path=[this is content, not a header] content=[eval(danger)]
+        ADDED line=2 path=[this is content, not a header] content=[console.log(x)]
+after:  ADDED line=1 path=[notes.md] content=[++ this is content, not a header]
+        ADDED line=2 path=[notes.md] content=[eval(danger)]
+        ADDED line=3 path=[notes.md] content=[console.log(x)]
+```
+
+Three separate defects in one: a garbage `path` on every finding for the rest of that file, a real added line never scanned at all, and every line number after it off by one. Not hypothetical — adding a `.patch`/`.diff` file to a repo, or a Markdown doc containing a diff snippet, does exactly this. This repo's own test sources do it.
+
+**The mirror image, in the chunker, is worse.** For non-git diffs `--- ` is the only file-boundary marker, and a *removed* line whose content starts with `-- ` renders as `--- ...`. Splitting there cuts a file's hunk in half; the second half reaches the parser with no `+++` above it, `currentPath` stays null, and every finding in it is **silently lost** — directly violating the scored "no duplicates, no losses, ordering preserved."
+
+**Fix — one invariant, applied in both components.** In a real unified diff the two markers *always appear as an adjacent pair*, and a marker pair never appears mid-hunk-body. So:
+- `--- X` is an old-file marker only when we're between hunks **or** its `+++` partner is on the very next line.
+- `+++ X` is a new-file marker only when its `---` partner just went by **or** we're between hunks.
+- Otherwise both are ordinary content, classified by their leading marker character like any other hunk line.
+
+"Between hunks" is tracked with an `inHunk` flag: set at a `@@` header (unambiguous — content lines always carry a +/-/space marker, so nothing inside a hunk can start `@@ -`), cleared by any line not shaped like a hunk line (`diff --git`, `index`, `new file mode`, `Binary files ... differ`), with `\ No newline at end of file` explicitly excluded from clearing it since it appears *inside* a hunk. The `!inHunk` half of each condition is what preserves the pre-existing lenient behaviour for a hand-written diff that omits the `---` line entirely — that case is pinned by its own test.
+
+The chunker uses the same pairing test for its boundary check (`isFileBoundary`), so both components now agree on what a file header is. Git-style diffs were never ambiguous (`diff --git ` can't be imitated by a marked content line) and are unaffected.
+
+Pinned by `DiffParserTest#addedLineStartingWithPlusPlusIsContentNotAFileHeader`, `#removedLineStartingWithDashDashIsContentNotAFileHeader`, `#plainDiffFileHeadersStillRecognizedBetweenFiles`, `#newFileHeaderWithoutAnOldFileMarkerStillSetsThePath`, and `ChunkerTest#spoofedOldFileMarkerDoesNotSplitAFile` / `#realOldFileMarkerStillSplitsAPlainDiff`.
+
+### 6.26 Bug found & fixed — MOCK-004's brace scan ran past the end of its own file, making chunked ≠ unchunked
+**In short:** an added `catch (e) {` whose closing brace isn't inside the hunk left the brace scan open-ended, and it kept walking into the *next file's* lines. The same diff then produced a finding when both files shared a chunk and no finding when they didn't — a direct violation of "findings must be identical to an unchunked scan."
+
+A hunk only shows a few lines of context, so a catch block whose closing `}` falls outside the hunk is completely ordinary. The scan had no file-boundary stop, so it borrowed whatever came next. Observed:
+
+```
+diff --git a/a.js b/a.js
+@@ -10,1 +10,2 @@
+ function f() {
++  try { risky(); } catch (e) {      <- opens; never closes within a.js
+
+diff --git a/b.js b/b.js
+@@ -1,1 +1,1 @@
++}                                    <- b.js's brace "closed" a.js's catch
+
+before:  unchunked -> [MOCK-004:a.js:11]   chunked -> []   (disagreement)
+after:   unchunked -> []                   chunked -> []   (identical)
+```
+
+**Fix:** the inner scan breaks when `next.path()` differs from the catch line's path. An unclosed block is then simply unclosed, identically regardless of chunking. Pinned by `MockReviewProviderTest#mock004_braceScanStopsAtTheFileBoundary`.
+
+**Known remaining simplification (documented, not fixed):** the scan still doesn't stop at *hunk* boundaries within one file, so a catch opened in hunk 1 could in principle be closed by a brace in hunk 3. Unlike the file-boundary case this cannot diverge between chunked and unchunked — one file's hunks always travel together in the same chunk — and in practice the intervening hunk's real code makes the body non-empty. `DiffLine` carries no hunk identifier, so fixing it means a model change rippling through the parser and its tests, which isn't justified for a divergence that can't affect a scored property.
+
+### 6.27 Bug found & fixed — an `Accept` header that excludes JSON turned every error envelope into a 500
+**In short:** the most consequential bug in this pass. `GET /v1/reviews/{unknown}/stream` with `Accept: text/event-stream` — precisely what a correct SSE client sends — returned `500 internal` instead of `404 not_found`. So did *every* error envelope for *any* `Accept` header that excludes JSON, and on the success side `GET /health` with `Accept: application/xml` returned a `500` as well.
+
+Observed, over a raw socket, before any fix:
+
+```
+GET /v1/reviews/nope/stream   Accept: text/event-stream  -> 500 {"error":{"code":"internal",...}}
+GET /v1/reviews/nope          Accept: application/xml    -> 500 {"error":{"code":"internal",...}}
+GET /v1/reviews/nope          Accept: text/plain         -> 500 {"error":{"code":"internal",...}}
+GET /health                   Accept: application/xml    -> 500 {"error":{"code":"internal",...}}
+GET /v1/reviews/nope          Accept: */*                -> 404  (correct — which is why no test caught it)
+```
+
+**Root cause, in two parts.** `ApiExceptionHandler` returned `ResponseEntity.status(...).body(envelope)` with no content type, leaving Spring to negotiate one from the `Accept` header. On `/stream` the handler method declares `produces = text/event-stream`, so the producible set for that request is event-stream only and a JSON envelope has no writable converter; the resulting `HttpMediaTypeNotAcceptableException` was then swallowed by the catch-all `@ExceptionHandler(Exception.class)` and rendered as `500 internal`. The `/health` case is the same mechanism on the 2xx side — a `Map` return value negotiated against an `Accept` that admits no JSON.
+
+**Fix — one principle, three places.** This service speaks JSON by contract; it should *state* its content type, not negotiate it. Setting a concrete `Content-Type` on the `ResponseEntity` makes Spring skip Accept negotiation entirely (`writeWithMessageConverters` short-circuits when the content type is preset), so:
+1. `ApiExceptionHandler.envelope(...)` now sets `MediaType.APPLICATION_JSON` — one line, and it fixes every error path at once.
+2. `HealthController`, `SpecController`, and both `ReviewController` methods return `ResponseEntity` with an explicit JSON content type.
+3. `StreamController` **dropped its `produces = text/event-stream` declaration**. Declaring it made `Accept` part of the *routing* decision, so a client asking for anything else stopped matching the handler at all — a 406 at mapping time, before any exception handler could help. `SseEmitter.extendResponse` sets `Content-Type: text/event-stream` on the response by itself when none is set, so the declaration bought nothing and cost a whole class of client. Verified the live stream still reports `Content-Type: text/event-stream`.
+
+Note this is strictly better than adding an `@ExceptionHandler(HttpMediaTypeNotAcceptableException.class)` returning 406: the contract's error-code vocabulary is closed and has no reasonable code for 406, and a 406 on `/health` would still be a broken liveness probe. Not negotiating at all removes the failure mode rather than renaming it.
+
+Pinned by `AdversarialEdgeCaseIntegrationTest#unknownJobStreamReturns404EnvelopeToAnSseClient`, `#errorEnvelopeIgnoresAnAcceptHeaderThatExcludesJson`, `#successResponsesAlsoIgnoreAnAcceptHeaderThatExcludesJson`, and `#streamStillServesAClientAskingForSomethingOtherThanEventStream`.
+
+### 6.28 Bug found & fixed — a chunk containing no hunk failed the entire job
+**In short:** the "no `@@` anywhere means this isn't a diff" rule (correct for the whole submitted diff — it's the 422 gate) was also being applied to each individual chunk, where it's wrong. A large diff whose trailing file is a pure rename died as `failed: internal error`.
+
+`JobService.doScan` re-parses each chunk with the same strict parser used for the 422 gate. But a chunk can legitimately contain no hunk at all: a pure rename entry, a mode change, a `Binary files ... differ` line. Observed with a >64 KiB diff whose last file is a rename:
+
+```
+before:  PROBE-CHUNK[0] parsed ok, lines=3000
+         PROBE-CHUNK[1] THREW InvalidDiffException: diff contains no hunks   -> job failed: internal error
+after:   PROBE-CHUNK[1] parsed ok, lines=0
+```
+
+**Fix:** `DiffParser.parse(String, boolean requireHunk)`, with the existing one-argument `parse` delegating with `true`. The submit path keeps the strict gate (a hunkless *whole diff* is still a 422 — that decision is unchanged); `doScan` parses chunks leniently. Pinned by `DiffParserTest#lenientParseAcceptsAChunkWithNoHunks` (both overloads asserted) and `AdversarialEdgeCaseIntegrationTest#diffWhoseTrailingFileHasNoHunksStillCompletes` (end to end: `chunks >= 2`, `done`, correct findings).
+
+### 6.29 A design change, not a bug — the result cache is now keyed on canonical content, not raw body bytes
+**In short:** idempotency and result caching were both keyed on the SHA-256 of the raw request bytes. Idempotency still is, correctly. Caching now hashes the canonical `(provider, maxFindings, diff)` tuple instead.
+
+The contract uses two different phrases, and they aren't parallel:
+- Idempotency: *"same key + **byte-identical body** → the same jobId. Same key + **different body** → 409."*
+- Caching: *"a **byte-identical `{diff, options}`** submitted again (any key or none) must not redo the work."*
+
+The first is about a *body*; hashing raw bytes is literally right. The second is about `{diff, options}` — and hashing raw bytes there is a proxy that's needlessly strict, since JSON key order, indentation, and the explicitly-ignored unknown fields all change the bytes without changing the work. Both interpretations satisfy every case the contract names; the canonical one additionally satisfies cases the raw-byte one would miss.
+
+An earlier pass had considered and *rejected* this, on the reasoning that "byte-identical appears in both clauses, so canonicalizing one would be inconsistent." That reasoning was wrong: the clauses say "body" and "{diff, options}" respectively, and treating two different phrases as if they were the same phrase was the actual inconsistency. Recorded here because reversing an earlier documented decision is worth being explicit about rather than quietly overwriting.
+
+The encoding (`provider + " " + maxFindings + " " + diff`) is injective: a provider name never contains a space and the count is always plain digits, so the diff can only begin after the second space. Verified live — the same diff submitted as `{"diff":D}` and as pretty-printed `{"options":{"maxFindings":100,"provider":"mock"},"diff":D}` now reports `cacheHit: true` with identical findings; a fresh diff still reports `cacheHit: false`.
+
+### 6.30 Hardening — the LLM prompt delimiter is now unguessable
+**In short:** diff content was wrapped in a fixed `<diff>` tag. A diff containing a line `</diff>` would close the data section early, and everything after it would read to the model as instructions.
+
+The system prompt already told the model the delimited content was data, never instructions — but a fixed delimiter is guessable, and a diff is attacker-controlled text. The wrapper now uses a per-call random suffix (`<diff-a3f9...>` … `</diff-a3f9...>`), named in the user message, with the system prompt stating that only that exact delimiter ends the data and any other tag inside it is more data. Content can still *say* anything; it can no longer get out of the quotes.
+
+This affects only the `llm` path (not scored on finding quality), but "injection content must never alter your service's behavior" is a scored *property*, and a closable delimiter was a real hole in the strongest form of that claim.
+
+There's an accidental live demonstration of inertness: feeding the service its own working-tree diff reports `MOCK-INJ` against `LlmReviewProvider.java`, because the anti-injection system prompt contains the phrase "ignore previous instructions" as an example. The rule fires; nothing else about the run changes.
+
+### 6.31 Verified-not-a-bug — auth-filter path matching against URL-encoding and normalization tricks
+`BearerAuthFilter` tests the raw `getRequestURI()` for `/v1` or a `/v1/` prefix, which invites the question of whether the check can be dodged by a path that Spring routes but the raw string doesn't match. Fired over raw sockets against the running server:
+
+```
+/v1/reviews/abc            -> 401   (baseline)
+//v1/reviews/abc           -> 404
+/v1//reviews/abc           -> 401
+/%76%31/reviews/abc        -> 404
+/v1/%72eviews/abc          -> 401
+/./v1/reviews/abc          -> 404
+/foo/../v1/reviews/abc     -> 404
+/v1/reviews/abc;a=b        -> 401
+```
+
+No variant reaches a handler unauthenticated: Tomcat rejects or refuses to normalize these into a route match before Spring dispatches. **No change made.** Worth recording that this is a property of the container's URI handling rather than of the filter's string test — if the container or its normalization settings ever changed, this check would need to be revisited, and knowing it was verified empirically (not assumed) is the point.
+
 ---
 
 ## 7. Testing strategy
 
-184 tests across 20 classes, 0 failures, 0 errors — verified with `./mvnw test` run to completion multiple times in a row (not flaky). Verification followed a staged methodology, each stage deliberately more adversarial than the last: implementation reviewed line-by-line against the contract, the full suite run to completion end to end (not just individual classes in isolation), a dedicated pass specifically hunting for unorthodox/crafted-diff edge cases, two separate live sweeps against the deployed service through the public URL — not localhost — each with a clean, grader-equivalent restart beforehand, and a final hardening pass (§6.23). Test inputs were deliberately chosen to be awkward for a real server rather than a unit test: unicode/emoji content, connector-level malformed URIs, integer-overflow option values, HEAD/OPTIONS/trailing-slash routing, zero-finding diffs, duplicate JSON keys, chunked transfer encoding, headerless hunks, idempotency-key edge cases. Each stage closed real issues before moving to the next — the full list is §6.10–§6.13, §6.15–§6.20, §6.22–§6.23, plus a handful of test-only fixes (fixtures that encoded incorrect assumptions about HTTP semantics or git diff quoting, and test isolation gaps where shared Spring context state leaked between classes).
+197 tests across 20 classes, 0 failures, 0 errors — verified with `./mvnw test` run to completion multiple times in a row (not flaky). Verification followed a staged methodology, each stage deliberately more adversarial than the last: implementation reviewed line-by-line against the contract, the full suite run to completion end to end (not just individual classes in isolation), a dedicated pass specifically hunting for unorthodox/crafted-diff edge cases, two separate live sweeps against the deployed service through the public URL — not localhost — each with a clean, grader-equivalent restart beforehand, a hardening pass (§6.23), and a final spec-vs-implementation audit (§6.24) that found five more real bugs. Test inputs were deliberately chosen to be awkward for a real server rather than a unit test: unicode/emoji content, connector-level malformed URIs, integer-overflow option values, HEAD/OPTIONS/trailing-slash routing, zero-finding diffs, duplicate JSON keys, chunked transfer encoding, headerless hunks, idempotency-key edge cases, non-JSON `Accept` headers, and diff content deliberately shaped to imitate structural diff markers. Each stage closed real issues before moving to the next — the full list is §6.10–§6.13, §6.15–§6.20, §6.22–§6.23, §6.25–§6.30, plus a handful of test-only fixes (fixtures that encoded incorrect assumptions about HTTP semantics or git diff quoting, and test isolation gaps where shared Spring context state leaked between classes).
+
+**A note on what the audit in §6.24 says about the suite.** Five real bugs survived 184 passing tests. Every one of them lived in a dimension the suite held constant without ever deciding to: all tests sent `Accept: */*`, all diffs were well-formed, all hunks had balanced braces. The transferable lesson is that "every requirement has a test" is a weaker property than it sounds — a test exercises one point in a large input space, and coverage of *requirements* says nothing about coverage of *dimensions*. The four questions in §6.24 are the ones worth re-asking on any future pass.
 
 - **Unit:** one crafted diff per mock rule with exact field assertions; parser line-number tests; chunker byte-boundary tests; sort/dedupe with adversarial ordering; MOCK-004 variants.
-  - `services/DiffParserTest` — §5 rows 12, 15, 18, §6.11.
-  - `services/ChunkerTest` — §5 rows 19, 20, 21, §6.10.
-  - `services/MockReviewProviderTest` — §5 rows 13, 14, 16, 17, 18, §6.12, §6.15.
+  - `services/DiffParserTest` (26) — §5 rows 12, 15, 18, 21b, 21c, §6.11, §6.25, §6.28.
+  - `services/ChunkerTest` (11) — §5 rows 19, 20, 21, 21c, §6.10, §6.25.
+  - `services/MockReviewProviderTest` (38) — §5 rows 13, 14, 16, 17, 18, 21d, §6.12, §6.15, §6.26.
   - `services/LlmReviewProviderTest` — §6.17.
   - `services/LlmReviewProviderRetryTest` — §6.23, against a local stand-in HTTP server: proves the transient-failure retry and the never-retry-a-4xx rule.
   - `services/JobServiceTest` — finalizeFindings dedupe/sort/truncate; §6.10 regression.
@@ -363,11 +520,11 @@ None of this changes any documented behavior a grader would be checking — `/sp
   - `controllers/RateLimitConcurrencyIntegrationTest` — rows 29, 30, against the real fixed 30/min `AppLimits` constant. `@DirtiesContext(AFTER_EACH_TEST_METHOD)`.
   - `controllers/SseIntegrationTest` — rows 32–34. `@DirtiesContext(AFTER_CLASS)`.
   - `controllers/LlmIntegrationTest` — row 31.
-  - `controllers/AdversarialEdgeCaseIntegrationTest` — §6.22. `@DirtiesContext(AFTER_EACH_TEST_METHOD)`, its own rate-limit isolation marker (kept out of `PostValidationIntegrationTest`'s budget — see §6.22).
+  - `controllers/AdversarialEdgeCaseIntegrationTest` (9) — §6.22, plus §5 rows 5b, 21b, 35, 36 (§6.27, §6.28). `@DirtiesContext(AFTER_EACH_TEST_METHOD)`, its own rate-limit isolation marker (kept out of `PostValidationIntegrationTest`'s budget — see §6.22). The `@DirtiesContext` per *method* is what makes it safe to keep adding request-heavy cases here: each method starts on a full bucket.
   - Package reorg (config/domain/diff/provider/service/util/web → bootstrap/configuration/controllers/dto/exceptions/filters/models/repositories/services/utils, grouped by architectural role) landed after all of the above was verified; it moved files and fixed imports only — the row/section references above still describe the same tests under their new package paths.
 - **Why `@DirtiesContext` matters**: `RateLimitFilter`'s `TokenBucket` is a Spring singleton, and `@SpringBootTest` caches contexts by configuration signature — several classes share the identical `properties = "app.bearer-token=tok"`, so without isolation Spring silently reuses one context (and one live bucket) across all of them. Combined POST volume can spuriously exceed 30/min and fail unrelated assertions.
 - Tests never require real environment vars — set via `properties = ...` on the test annotation.
-- **Flaky-test detection (NonDex)**: `edu.illinois:nondex-maven-plugin:2.2.1` is registered in `pom.xml` but not bound to any lifecycle phase, so `./mvnw test`/`package` are unaffected — it only runs on explicit invocation: `./mvnw nondex:nondex` (default 3 shuffled seeds) or `./mvnw nondex:nondex -DnondexRuns=N` for more. It reruns the whole suite with randomized `HashMap`/`HashSet` iteration order (JDK collections whose iteration order is unspecified by contract) to surface tests that accidentally depend on that order rather than on the documented `path → line → ruleId` sort or an explicit assertion. Run twice: once at the default 3 seeds, once at 10 — **11 total runs (1,980 individual test executions), 0 failures in any configuration.** No hidden ordering assumptions found, so nothing needed fixing or documenting as "expected flaky." `.nondex/` (its scratch output directory) is gitignored.
+- **Flaky-test detection (NonDex)**: `edu.illinois:nondex-maven-plugin:2.2.1` is registered in `pom.xml` but not bound to any lifecycle phase, so `./mvnw test`/`package` are unaffected — it only runs on explicit invocation: `./mvnw nondex:nondex` (default 3 shuffled seeds) or `./mvnw nondex:nondex -DnondexRuns=N` for more. It reruns the whole suite with randomized `HashMap`/`HashSet` iteration order (JDK collections whose iteration order is unspecified by contract) to surface tests that accidentally depend on that order rather than on the documented `path → line → ruleId` sort or an explicit assertion. Re-run after the §6.24 audit at both settings again: once at the default 3 seeds, once at 10 — **11 total runs of the 197-test suite (2,167 individual test executions), 0 failures in any configuration**, `BUILD SUCCESS`. No hidden ordering assumptions found, so nothing needed fixing or documenting as "expected flaky." Re-running it after that audit mattered more than usual: `DiffParser` gained stateful flags carried across a loop (`inHunk`, `prevWasOldMarker`), which is exactly the kind of change where an order-dependent assumption would hide. `.nondex/` (its scratch output directory) is gitignored.
 ---
 
 ## 8. Deployment — Docker (D: drive) + ngrok static domain

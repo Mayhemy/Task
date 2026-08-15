@@ -237,4 +237,70 @@ class DiffParserTest {
         String diff = "--- a/f.js\n+++ b/f.js\n@@ -1 +1 @@\n+    indented();\n";
         assertThat(parser.parse(diff).get(0).content()).isEqualTo("    indented();");
     }
+
+    // ---- file-header disambiguation (STATUS.md 6.24) ----
+
+    @Test
+    void addedLineStartingWithPlusPlusIsContentNotAFileHeader() {
+        // Adding a line whose own text starts with "++ " emits the raw line
+        // "+++ ...". Treated as a header it would hijack the path for the rest
+        // of the file AND swallow a real added line, shifting every line number
+        // after it. Inside a hunk it has to stay content.
+        String diff = "--- a/notes.md\n+++ b/notes.md\n@@ -1,0 +1,3 @@\n"
+                + "+++ this is content, not a header\n"
+                + "+eval(danger)\n"
+                + "+console.log(x)\n";
+        List<DiffLine> lines = parser.parse(diff);
+        assertThat(lines).hasSize(3);
+        assertThat(lines).extracting(DiffLine::path).containsOnly("notes.md");
+        assertThat(lines).extracting(DiffLine::newLine).containsExactly(1, 2, 3);
+        assertThat(lines.get(0).content()).isEqualTo("++ this is content, not a header");
+    }
+
+    @Test
+    void removedLineStartingWithDashDashIsContentNotAFileHeader() {
+        // Mirror image: removing a line whose text starts with "-- " emits
+        // "--- ...". No +++ partner follows, so it is a removed line.
+        String diff = "--- a/a.js\n+++ b/a.js\n@@ -1,3 +1,2 @@\n"
+                + "--- foo\n"
+                + "+eval(x)\n"
+                + " ctx\n";
+        List<DiffLine> lines = parser.parse(diff);
+        assertThat(lines).extracting(DiffLine::type)
+                .containsExactly(LineType.REMOVED, LineType.ADDED, LineType.CONTEXT);
+        assertThat(lines.get(0).content()).isEqualTo("-- foo");
+        // Removed lines never advance the new-file counter.
+        assertThat(lines.get(1).newLine()).isEqualTo(1);
+        assertThat(lines.get(2).newLine()).isEqualTo(2);
+    }
+
+    @Test
+    void plainDiffFileHeadersStillRecognizedBetweenFiles() {
+        // The pairing rule must not break the ordinary case: a non-git diff has
+        // nothing but the --- / +++ pair to mark where the second file starts.
+        String diff = "--- a/f1.js\n+++ b/f1.js\n@@ -1 +1 @@\n+eval(x)\n"
+                + "--- a/f2.js\n+++ b/f2.js\n@@ -1 +1 @@\n+console.log(1)\n";
+        List<DiffLine> lines = parser.parse(diff);
+        assertThat(lines).extracting(DiffLine::path).containsExactly("f1.js", "f2.js");
+    }
+
+    @Test
+    void newFileHeaderWithoutAnOldFileMarkerStillSetsThePath() {
+        // Hand-written diffs sometimes omit the --- line entirely. It sits
+        // before any hunk, so there is nothing there to confuse it with.
+        String diff = "+++ b/f.js\n@@ -1 +1 @@\n+eval(x)\n";
+        List<DiffLine> lines = parser.parse(diff);
+        assertThat(lines).hasSize(1);
+        assertThat(lines.get(0).path()).isEqualTo("f.js");
+    }
+
+    @Test
+    void lenientParseAcceptsAChunkWithNoHunks() {
+        // Individual chunks parse leniently: a chunk holding only a rename
+        // entry has no @@ at all, and must scan to zero findings rather than
+        // fail the whole job. The strict overload still rejects it.
+        String rename = "diff --git a/a.js b/b.js\nsimilarity index 100%\nrename from a.js\nrename to b.js\n";
+        assertThat(parser.parse(rename, false)).isEmpty();
+        assertThatThrownBy(() -> parser.parse(rename, true)).isInstanceOf(InvalidDiffException.class);
+    }
 }

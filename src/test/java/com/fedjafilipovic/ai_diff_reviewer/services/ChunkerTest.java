@@ -127,4 +127,25 @@ class ChunkerTest {
             assertThat(bytes(c)).isLessThanOrEqualTo(limit + bytes(gitFile("f0.js", 40)));
         }
     }
+
+    @Test
+    void spoofedOldFileMarkerDoesNotSplitAFile() {
+        // A removed line whose text starts with "-- " emits the raw line
+        // "--- ...". Splitting there would cut this file's hunk in two, and the
+        // second half would reach the parser with no +++ header above it, so
+        // every finding in it would be silently lost. The +++ partner on the
+        // next line is what tells a real boundary from an impostor.
+        String diff = "--- a/a.js\n+++ b/a.js\n@@ -1,4 +1,3 @@\n"
+                + "--- not a boundary\n"
+                + "+eval(x)\n"
+                + " ctx\n";
+        assertThat(chunker.splitByFile(diff)).hasSize(1);
+    }
+
+    @Test
+    void realOldFileMarkerStillSplitsAPlainDiff() {
+        String diff = "--- a/f1.js\n+++ b/f1.js\n@@ -1 +1 @@\n+eval(x)\n"
+                + "--- a/f2.js\n+++ b/f2.js\n@@ -1 +1 @@\n+console.log(1)\n";
+        assertThat(chunker.splitByFile(diff)).hasSize(2);
+    }
 }

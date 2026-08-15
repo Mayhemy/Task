@@ -22,11 +22,12 @@ public class Chunker {
     /** Visible for testing: split into per-file segments, markers kept with their segment. */
     List<String> splitByFile(String diffText) {
         boolean gitStyle = diffText.contains("diff --git ");
-        String marker = gitStyle ? "diff --git " : "--- ";
         List<String> segments = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
-        for (String line : diffText.split("\n", -1)) {
-            if (line.startsWith(marker) && cur.length() > 0) {
+        String[] lines = diffText.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (isFileBoundary(lines, i, gitStyle) && cur.length() > 0) {
                 segments.add(cur.toString());
                 cur = new StringBuilder();
             }
@@ -51,6 +52,27 @@ public class Chunker {
             }
         }
         return segments;
+    }
+
+    /**
+     * A git diff announces each file with "diff --git ", which no content line
+     * can imitate — a content line always carries a +/-/space marker first.
+     *
+     * A plain `diff -u` has no such announcement, so the only boundary is the
+     * "--- " old-file marker, and that one CAN be imitated: removing a line
+     * whose text starts with "-- " emits the raw line "--- ...". Splitting
+     * there would cut a file's hunk in half, and the second half would arrive
+     * at the parser with no +++ header above it — every finding in it silently
+     * lost, which is precisely the "no losses" property the chunking probes
+     * check. Requiring the +++ partner on the next line removes the ambiguity:
+     * a real unified diff always writes the two markers adjacently.
+     */
+    private static boolean isFileBoundary(String[] lines, int i, boolean gitStyle) {
+        String line = lines[i];
+        if (gitStyle) {
+            return line.startsWith("diff --git ");
+        }
+        return line.startsWith("--- ") && i + 1 < lines.length && lines[i + 1].startsWith("+++ ");
     }
 
     private List<String> pack(List<String> fileSegments, int maxBytes) {

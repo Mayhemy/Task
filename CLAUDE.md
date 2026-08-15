@@ -71,6 +71,10 @@ utils/          Hashing
 
 - **`AppLimits`** is the single source of truth for every declared limit — `/spec`, the payload guard, the rate limiter, the chunker, and the executor pool all read from it. Never hardcode a limit twice; the grader cross-checks `/spec` against actual enforced behavior.
 - **`DiffParser`** resets its new-file line counter from *each hunk's own* `@@` header, never a running total across the diff — this is what makes chunking safe (splitting between files can never shift a line number). A blank context line with **no** leading space is still meaningful (treated as `CONTEXT`, advances the counter) — this was a real bug, not a hypothetical; see `STATUS.md` §6.11 before touching this logic.
+- **`+++ ` / `--- ` are only file headers as an adjacent pair, or outside a hunk body** (`inHunk` / `prevWasOldMarker` in `DiffParser`, `isFileBoundary` in `Chunker` — both components must agree). Inside a hunk they're ordinary content: an added line starting `++ ` renders as `+++ ...`, a removed line starting `-- ` renders as `--- ...`. Getting this wrong corrupted paths and line numbers and silently dropped findings; see `STATUS.md` §6.25.
+- **`DiffParser.parse` has two overloads.** The one-arg form is strict (no `@@` anywhere → `InvalidDiffException` → 422) and belongs on the *whole submitted diff*. `parse(text, false)` is for *individual chunks*, which may legitimately contain no hunk (rename, mode change, binary entry). Don't use the strict form per chunk; see `STATUS.md` §6.28.
+- **Every response states its `Content-Type` rather than negotiating it.** Error envelopes and JSON success bodies set `MediaType.APPLICATION_JSON` explicitly, and `StreamController` deliberately has **no** `produces` (SseEmitter sets the header itself). Leaving it to Accept-header negotiation turned every error into a 500 for any non-JSON `Accept` — including `text/event-stream` from a correct SSE client; see `STATUS.md` §6.27. Don't "tidy up" by removing these or re-adding `produces`.
+- **The two hashes are keyed differently on purpose.** Idempotency conflict detection hashes the **raw request bytes** ("different body" → 409); the result cache hashes the canonical **`(provider, maxFindings, diff)`** tuple ("byte-identical {diff, options}"). See `STATUS.md` §6.29 — this reversed an earlier decision, so don't re-unify them without reading it.
 - **Mock rules apply to ADDED lines only** (MOCK-004 also reads `CONTEXT` lines, for brace matching). Quick reference — full rationale for each in `STATUS.md` §4 Step 6:
 
   | Rule | Trigger | Note |
@@ -78,7 +82,7 @@ utils/          Hashing
   | MOCK-001 eval usage | `contains("eval(")` | literal — `myeval(` fires on purpose |
   | MOCK-002 hardcoded credential | brief's exact regex, case-insensitive | used verbatim, no "improvements" |
   | MOCK-003 SQL string concat | regex with `\b` word boundary | **case-sensitive** — deliberate, deviates from the guide |
-  | MOCK-004 swallowed exception | multi-line brace scan | `\b` before `catch`; body lines joined with real `\n` (both were real bugs, see §6.12/§6.15) |
+  | MOCK-004 swallowed exception | multi-line brace scan | `\b` before `catch`; body lines joined with real `\n`; scan **stops at the file boundary** (all three were real bugs — §6.12/§6.15/§6.26) |
   | MOCK-005 loose null comparison | `(?<![=!])(==\|!=) null` | excludes `===`/`!==` via lookbehind |
   | MOCK-006 deep-clone via JSON | literal contains | case-sensitive |
   | MOCK-007 console.log left in | literal contains | — |

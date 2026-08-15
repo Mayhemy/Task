@@ -333,4 +333,20 @@ class MockReviewProviderTest {
         List<Finding> fs = scan("--- a/f.js\n+++ b/f.js\n@@ -1 +1 @@\n+const x = 1;\n");
         assertThat(fs).isEmpty();
     }
+
+    @Test
+    void mock004_braceScanStopsAtTheFileBoundary() {
+        // a.js opens a catch whose closing brace is outside the hunk; b.js
+        // happens to begin with a closing brace. Without a file-boundary stop
+        // the scan borrows b.js's brace, "closes" the block, and reports a
+        // swallowed exception in a.js — but only when both files land in the
+        // same chunk, so the same diff would score differently chunked and
+        // unchunked. The contract requires those two to be identical.
+        String diff = "diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -10,1 +10,2 @@\n"
+                + " function f() {\n"
+                + "+  try { risky(); } catch (e) {\n"
+                + "diff --git a/b.js b/b.js\n--- a/b.js\n+++ b/b.js\n@@ -1,1 +1,1 @@\n"
+                + "+}\n";
+        assertThat(scan(diff)).noneMatch(x -> x.ruleId().equals("MOCK-004"));
+    }
 }

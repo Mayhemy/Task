@@ -1,6 +1,8 @@
 package com.fedjafilipovic.ai_diff_reviewer.controllers;
 
 import com.fedjafilipovic.ai_diff_reviewer.configuration.AppLimits;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -12,14 +14,16 @@ import java.util.Map;
 public class SpecController {
 
     @GetMapping("/spec")
-    public Map<String, Object> spec() {
-        return Map.of(
-                "specVersion", AppLimits.SPEC_VERSION,
-                "providers", List.of("mock", "llm"),
-                "limits", Map.of(
-                        "maxPayloadBytes", AppLimits.MAX_PAYLOAD_BYTES,
-                        "chunkBytes", AppLimits.CHUNK_BYTES,
-                        "maxConcurrentJobs", AppLimits.MAX_CONCURRENT_JOBS,
-                        "rateLimitPerMinute", AppLimits.RATE_LIMIT_PER_MINUTE));
+    public ResponseEntity<Map<String, Object>> spec() {
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                        "specVersion", AppLimits.SPEC_VERSION,
+                        "providers", List.of("mock", "llm"),
+                        "limits", Map.of(
+                                "maxPayloadBytes", AppLimits.MAX_PAYLOAD_BYTES,
+                                "chunkBytes", AppLimits.CHUNK_BYTES,
+                                "maxConcurrentJobs", AppLimits.MAX_CONCURRENT_JOBS,
+                                "rateLimitPerMinute", AppLimits.RATE_LIMIT_PER_MINUTE)));
     }
 }

@@ -90,13 +90,13 @@ public class JobService {
                         throw new IdempotencyConflictException();
                     }
                 }
-                Job job = createAndEnqueue(bodyHash, diff, options);
+                Job job = createAndEnqueue(diff, options);
                 idempotencyStore.put(idempotencyKey, new IdempotencyStore.IdemRecord(bodyHash, job.getId()));
                 return new SubmitOutcome(job, false);
             }
         }
 
-        return new SubmitOutcome(createAndEnqueue(bodyHash, diff, options), false);
+        return new SubmitOutcome(createAndEnqueue(diff, options), false);
     }
 
     public Job getJob(String jobId) {
@@ -107,21 +107,39 @@ public class JobService {
         return job;
     }
 
-    private Job createAndEnqueue(String bodyHash, String diff, ReviewOptions options) {
+    private Job createAndEnqueue(String diff, ReviewOptions options) {
         // Synchronous validation: throws InvalidDiffException (422) before any job exists.
         diffParser.parse(diff);
         List<String> chunks = chunker.chunk(diff, AppLimits.CHUNK_BYTES);
         long inputBytes = diff.getBytes(StandardCharsets.UTF_8).length;
 
         Job job = jobStore.create(new Usage(inputBytes, chunks.size(), false));
-        jobExecutor.submit(() -> runJob(job, bodyHash, chunks, options, inputBytes));
+        String contentHash = contentHash(diff, options);
+        jobExecutor.submit(() -> runJob(job, contentHash, chunks, options, inputBytes));
         return job;
     }
 
-    private void runJob(Job job, String bodyHash, List<String> chunks, ReviewOptions options, long inputBytes) {
+    /**
+     * Cache key. The contract's phrase is "a byte-identical {diff, options}",
+     * and this hashes exactly that — the two option values then the diff —
+     * rather than the raw request bytes. The encoding is unambiguous because
+     * a provider name never contains a space and the count is always plain
+     * digits, so the diff can only begin after the second space.
+     * They agree on every case the contract names; they differ only where
+     * hashing raw bytes would be needlessly strict, since JSON key order,
+     * whitespace, and the ignored-by-contract unknown fields all change the
+     * bytes without changing the work to be done. Deliberately NOT shared with
+     * the idempotency check, which stays on the raw bytes: there the contract
+     * says "different body", and a body really is what it compares.
+     */
+    private static String contentHash(String diff, ReviewOptions options) {
+        return Hashing.sha256Hex(options.provider() + " " + options.maxFindings() + " " + diff);
+    }
+
+    private void runJob(Job job, String contentHash, List<String> chunks, ReviewOptions options, long inputBytes) {
         job.markRunning();
         try {
-            ResultCache.Lookup lookup = resultCache.getOrCreate(bodyHash);
+            ResultCache.Lookup lookup = resultCache.getOrCreate(contentHash);
             ResultCache.ScanResult scan;
             boolean cacheHit;
             if (lookup.created()) {
@@ -130,7 +148,7 @@ public class JobService {
                     lookup.future().complete(scan);
                 } catch (Throwable t) {
                     // Never cache failures — a later retry must re-run.
-                    resultCache.remove(bodyHash, lookup.future());
+                    resultCache.remove(contentHash, lookup.future());
                     lookup.future().completeExceptionally(t);
                     throw t;
                 }
@@ -172,7 +190,11 @@ public class JobService {
         ReviewProvider provider = ReviewOptions.PROVIDER_LLM.equals(options.provider()) ? llmProvider : mockProvider;
         List<Finding> collected = new ArrayList<>();
         for (String chunkText : chunks) {
-            List<DiffLine> lines = diffParser.parse(chunkText);
+            // requireHunk=false: the whole diff was already proven to contain a
+            // hunk synchronously (that's the 422 gate), but an individual chunk
+            // need not — a chunk holding only a rename or a binary-file entry
+            // has no @@ at all, and must scan to zero findings, not fail the job.
+            List<DiffLine> lines = diffParser.parse(chunkText, false);
             collected.addAll(provider.review(chunkText, lines));
         }
         return new ResultCache.ScanResult(finalizeFindings(collected), new Usage(inputBytes, chunks.size(), false));
