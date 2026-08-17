@@ -113,13 +113,20 @@ to know the tests were passing because of the comparator and not because a hash
 map happened to iterate conveniently. 11 runs, 0 failures.
 
 Beyond the suite, I wrote a PowerShell script that builds the image, starts the
-container, and then re-runs the whole contract as real HTTP calls against
+container, and then replays the whole contract as real HTTP calls against
 **both** `localhost` and the public URL before holding the deployment up for
-the scoring window. It's operational tooling rather than part of the
+the scoring window. The scoring itself of course runs on your side — this is
+just my attempt to simulate it from the outside, so that if something is wrong
+I find out before you do. It's operational tooling rather than part of the
 deliverable, but it's how I know the deployed service and the tested service
-actually agree — and it caught something no unit test could have, which is that
-a browser-shaped `User-Agent` gets ngrok's free-tier HTML interstitial instead
-of my API.
+actually agree, and it caught something no unit test could have: a
+browser-shaped `User-Agent` gets ngrok's free-tier HTML interstitial instead of
+my API.
+
+That turned out to be worth more than I expected. Testing the running service
+from the outside, with a different HTTP client than the one I'd been using, is
+what surfaced the payload-limit problem described below — which every test I
+owned had been passing.
 
 ### The audit that found the most
 
