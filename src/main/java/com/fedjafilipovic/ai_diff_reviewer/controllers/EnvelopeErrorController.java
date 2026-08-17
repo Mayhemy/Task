@@ -1,5 +1,6 @@
 package com.fedjafilipovic.ai_diff_reviewer.controllers;
 
+import com.fedjafilipovic.ai_diff_reviewer.dto.ErrorEnvelope;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.boot.webmvc.error.ErrorController;
@@ -8,8 +9,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.RequestMapping;
-
-import java.util.Map;
 
 /**
  * The contract says the error envelope applies to ALL non-2xx. Spring's own
@@ -43,8 +42,9 @@ public class EnvelopeErrorController implements ErrorController {
             message = "Unexpected error";
         }
 
-        String body = MAPPER.writeValueAsString(
-                Map.of("error", Map.of("code", code, "message", message)));
+        // ErrorEnvelope (a record) rather than nested Map.of, so code always
+        // precedes message — Map.of reshuffles its fields per JVM start.
+        String body = MAPPER.writeValueAsString(ErrorEnvelope.of(code, message));
         return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body(body);
     }
 }

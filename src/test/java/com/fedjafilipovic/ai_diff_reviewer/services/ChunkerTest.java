@@ -148,4 +148,16 @@ class ChunkerTest {
                 + "--- a/f2.js\n+++ b/f2.js\n@@ -1 +1 @@\n+console.log(1)\n";
         assertThat(chunker.splitByFile(diff)).hasSize(2);
     }
+
+    @Test
+    void midLineDiffGitTextDoesNotFlipAPlainDiffIntoGitMode() {
+        // "diff --git " here is a section heading on the @@ header and an added
+        // line's content, never a real announcement in column zero. Detecting
+        // git style with a bare contains() would switch to looking for
+        // "diff --git " at line start, find none, and return the whole payload
+        // as ONE segment — so a 200 KiB diff would report usage.chunks: 1.
+        String diff = "--- a/f1.js\n+++ b/f1.js\n@@ -1 +1 @@ diff --git a/x b/x\n+eval(x)\n"
+                + "--- a/f2.js\n+++ b/f2.js\n@@ -1 +1 @@\n+var s = \"diff --git a/y b/y\";\n";
+        assertThat(chunker.splitByFile(diff)).hasSize(2);
+    }
 }

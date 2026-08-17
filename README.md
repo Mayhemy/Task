@@ -122,10 +122,14 @@ Every non-2xx response uses one shape:
 ## Running with Docker
 
 ```bash
-docker build -t xsolla-task:1.0.0 .
-docker run -d --name xsolla-task --restart unless-stopped \
-  --env-file .env -p 8080:8080 xsolla-task:1.0.0
+docker build -t ai-diff-reviewer:1.0.0 .
+docker run -d --name ai-diff-reviewer --restart unless-stopped \
+  --env-file .env -p 8080:8080 ai-diff-reviewer:1.0.0
 ```
+
+This is how the deployed instance runs. The image is a multi-stage build —
+Maven compiles inside the builder stage, and only the jar plus a JRE end up in
+the final image, so nothing about the host's Java setup matters.
 
 ## Running the tests
 
@@ -133,7 +137,7 @@ docker run -d --name xsolla-task --restart unless-stopped \
 ./mvnw test
 ```
 
-197 tests. Unit tests cover the diff parser, chunker, and every mock rule
+200 tests. Unit tests cover the diff parser, chunker, and every mock rule
 (trigger + decoy cases) in isolation. Integration tests spin up the full
 service (`@SpringBootTest`, random port) and exercise auth, validation
 precedence, lifecycle, idempotency/caching, rate limiting, concurrency,

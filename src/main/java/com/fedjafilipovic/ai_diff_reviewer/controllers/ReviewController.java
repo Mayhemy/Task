@@ -3,6 +3,7 @@ package com.fedjafilipovic.ai_diff_reviewer.controllers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import com.fedjafilipovic.ai_diff_reviewer.configuration.AppLimits;
+import com.fedjafilipovic.ai_diff_reviewer.dto.ApiError;
 import com.fedjafilipovic.ai_diff_reviewer.models.Job;
 import com.fedjafilipovic.ai_diff_reviewer.dto.ReviewOptions;
 import com.fedjafilipovic.ai_diff_reviewer.services.JobService;
@@ -69,7 +70,9 @@ public class ReviewController {
         body.put("findings", job.getFindings());
         body.put("usage", job.getUsage());
         if (job.getErrorMessage() != null) {
-            body.put("error", Map.of("code", "internal", "message", job.getErrorMessage()));
+            // ErrorEnvelope's inner record, not a Map.of — a record serializes
+            // in declaration order, where Map.of reshuffles per JVM start.
+            body.put("error", new ApiError("internal", job.getErrorMessage()));
         }
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(body);
     }

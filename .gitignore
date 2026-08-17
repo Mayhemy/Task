@@ -2,10 +2,15 @@ HELP.md
 target/
 .env
 .nondex/
-NOTES-my-approach.md
-# Held back intentionally — commit this yourself when ready, then remove this line.
-SUBMISSION.md
 .mvn/wrapper/maven-wrapper.jar
+
+# Working notes and operational tooling — kept out of the submitted repo.
+# SUBMISSION.md is NOT here on purpose: the task requires it in the repo.
+NOTES-my-approach.md
+EXPLANATION.md
+STATUS.md
+CLAUDE.md
+scripts/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
@@ -36,3 +41,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# uptime/verification logs from scripts/submit-and-hold.ps1
+.uptime/

@@ -7,6 +7,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -57,7 +58,7 @@ public class Job {
         this.usage = finalUsage;
         this.status = JobStatus.DONE;
         appendAndBroadcast("status", Map.of("status", JobStatus.DONE.toJson()));
-        appendAndBroadcast("done", Map.of("total", truncated.size(), "usage", finalUsage));
+        appendAndBroadcast("done", ordered("total", truncated.size(), "usage", finalUsage));
         completeTerminal();
     }
 
@@ -66,8 +67,24 @@ public class Job {
         this.status = JobStatus.FAILED;
         // Terminal event for a failed job: status:failed carrying the error.
         // The contract's `done` schema ({total, usage}) doesn't fit failure.
-        appendAndBroadcast("status", Map.of("status", JobStatus.FAILED.toJson(), "error", message));
+        appendAndBroadcast("status", ordered("status", JobStatus.FAILED.toJson(), "error", message));
         completeTerminal();
+    }
+
+    /**
+     * Two-entry event payload with a fixed field order. Map.of derives its
+     * iteration order from a per-JVM-start SALT, so the `done` event's JSON
+     * came out as {total, usage} on one boot and {usage, total} on the next.
+     * Replay stayed self-consistent (same map instance, same JVM), but the
+     * shape of a documented event should not depend on when the process
+     * started. Single-entry payloads have nothing to reorder and still use
+     * Map.of.
+     */
+    private static Map<String, Object> ordered(String k1, Object v1, String k2, Object v2) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put(k1, v1);
+        m.put(k2, v2);
+        return m;
     }
 
     /**

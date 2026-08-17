@@ -112,6 +112,29 @@ class AuthRoutingIntegrationTest {
         assertThat(limits.get("rateLimitPerMinute").asInt()).isEqualTo(30);
     }
 
+    /**
+     * Field ORDER, not just field presence. Every other assertion in this file
+     * looks fields up by name, so all of them passed while /health and /spec
+     * were emitting their fields in a different order after every restart —
+     * Map.of orders its entries by a SALT randomized once per JVM start. These
+     * two assert the serialized bytes, which is the only way the defect shows.
+     */
+    @Test
+    void healthFieldsAreInContractOrder() {
+        HttpSupport.RawResponse r = http().get("/health", null);
+        String body = new String(r.body(), java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(body).startsWith("{\"status\":\"ok\",\"version\":\"1.0.0\",\"uptimeSeconds\":");
+    }
+
+    @Test
+    void specFieldsAreInContractOrder() {
+        HttpSupport.RawResponse r = http().get("/spec", null);
+        String body = new String(r.body(), java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(body).isEqualTo("{\"specVersion\":\"1.0\",\"providers\":[\"mock\",\"llm\"],"
+                + "\"limits\":{\"maxPayloadBytes\":1048576,\"chunkBytes\":65536,"
+                + "\"maxConcurrentJobs\":4,\"rateLimitPerMinute\":30}}");
+    }
+
     @Test
     void healthAndSpecWithGarbageTokenStill200() {
         assertThat(http().get("/health", "garbage").status()).isEqualTo(200);

@@ -21,7 +21,7 @@ public class Chunker {
 
     /** Visible for testing: split into per-file segments, markers kept with their segment. */
     List<String> splitByFile(String diffText) {
-        boolean gitStyle = diffText.contains("diff --git ");
+        boolean gitStyle = isGitStyle(diffText);
         List<String> segments = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
         String[] lines = diffText.split("\n", -1);
@@ -52,6 +52,22 @@ public class Chunker {
             }
         }
         return segments;
+    }
+
+    /**
+     * Anchored to the start of a LINE, not a bare {@code contains}. The
+     * announcement is only an announcement in column zero; the same text sitting
+     * mid-line is ordinary data — most plausibly a plain {@code diff -u} whose
+     * hunk header carries a section heading after the {@code @@}, or a diff of a
+     * file that discusses diffs. A bare contains would flip such a payload into
+     * git mode, where nothing starts with "diff --git " and so NO boundary is
+     * ever found: the whole thing collapses into one oversized chunk that
+     * reports {@code usage.chunks: 1} for a diff well over the declared 64 KiB.
+     * Findings would still be right (never splitting cannot lose anything), but
+     * the declared chunking behaviour would not be.
+     */
+    private static boolean isGitStyle(String diffText) {
+        return diffText.startsWith("diff --git ") || diffText.contains("\ndiff --git ");
     }
 
     /**
