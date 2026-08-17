@@ -172,6 +172,36 @@ undercuts that. Every existing assertion looked fields up *by name*, so the
 tests were structurally incapable of seeing it; the new ones compare the raw
 response string.
 
+Then I tested the deployed service the way a grader would rather than the way I
+had been — same contract, different HTTP client — and found a third. The
+contract says "payload over 1 MiB → 413", and it did: with curl, at every size,
+and against the origin directly with anything. With Python's `requests` it
+raised `ConnectionError` instead, so an automated probe written in Python would
+have scored that line as a fail.
+
+The cause is that answering 413 the moment the limit trips commits the response
+while the client is still uploading. The tunnel, now relaying into an upstream
+that has stopped reading, turns that into a TCP reset. Clients that read while
+writing recover and see the status; clients that write the whole body first
+never read anything. Sizing the body precisely isolated it — 1 MiB accepted,
+1 MiB plus one byte reset — which also confirmed the boundary itself was exactly
+right.
+
+The fix is to let the bytes land before closing. My first attempt at that was
+worse than the bug: it blocked on a plain read, so a client lying with a large
+`Content-Length` and then sending nothing would have parked a request thread
+forever. The test suite failed immediately on a test written weeks earlier whose
+comment already said the fast path must reject "without waiting to read a body
+that never fully arrives". The version that shipped only reads what
+`available()` already has buffered, so it can never wait on bytes that may never
+come, and it is bounded by idle time, total time and total bytes together. I
+also chased a wrong theory on the way: the first version failed above exactly
+2 MiB, which is exactly Tomcat's default `maxSwallowSize`, and that turned out
+to be a coincidence — changing the setting moved nothing, which is how I found
+out. Everything from 1 MiB + 1 byte through 2 MiB now returns a clean 413 to
+every client; past that the tunnel can still reset, which I've left documented
+rather than pretending it doesn't exist.
+
 The second was in the chunker: it decided whether a payload was a git diff with
 an unanchored `contains("diff --git ")` over the whole text. Those characters
 are an announcement only at the start of a line — mid-line they're just data,

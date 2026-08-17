@@ -86,6 +86,7 @@ public class ReviewController {
     private byte[] readBounded(HttpServletRequest request) throws IOException {
         long declared = request.getContentLengthLong();
         if (declared > AppLimits.MAX_PAYLOAD_BYTES) {
+            drainWhatIsAlreadyComing(request);
             throw new PayloadTooLargeException();
         }
         InputStream in = request.getInputStream();
@@ -96,11 +97,76 @@ public class ReviewController {
         while ((n = in.read(buf)) != -1) {
             total += n;
             if (total > AppLimits.MAX_PAYLOAD_BYTES) {
+                drainWhatIsAlreadyComing(request);
                 throw new PayloadTooLargeException();
             }
             out.write(buf, 0, n);
         }
         return out.toByteArray();
+    }
+
+    private static final long MAX_DRAIN_BYTES = 8L * 1024 * 1024;
+    /** Give up once the client has sent nothing at all for this long. */
+    private static final long DRAIN_IDLE_GIVEUP_MILLIS = 2_000;
+    /** Absolute ceiling, however fast the client keeps sending. */
+    private static final long DRAIN_TOTAL_BUDGET_MILLIS = 12_000;
+
+    /**
+     * Reads and discards whatever the client is still sending, so the upload
+     * can finish before we close the connection under it.
+     *
+     * Why: answering 413 the moment the limit trips is correct HTTP, and
+     * against the origin directly every client sees it. But it commits the
+     * response mid-upload, and an intermediary relaying into an upstream that
+     * has stopped reading turns that into a TCP reset. Clients that read while
+     * writing (curl) still get the 413; clients that write the whole body
+     * before reading (python-requests, urllib) get a ConnectionError and never
+     * see the status we sent. Measured through the tunnel: 1 MiB accepted
+     * cleanly, 1 MiB + 1 byte reset. Letting the bytes land removes the cause.
+     *
+     * Why it cannot block: it only reads what {@code available()} already has
+     * buffered, so no read ever waits on bytes that may never arrive. A client
+     * that lies with a huge Content-Length and then sends nothing is exactly
+     * what the fast path above rejects cheaply, and it must not be able to park
+     * a request thread — it costs {@link #DRAIN_IDLE_GIVEUP_MILLIS} and nothing
+     * more. (For scale: a client can already hold a thread for Tomcat's 20 s
+     * connectionTimeout just by trickling a legitimate body, so this widens
+     * nothing that was not already open.)
+     *
+     * Bounded three ways because no single bound is enough: idle time handles
+     * the liar, the total budget handles a slow trickle, and the byte cap
+     * handles someone genuinely sending gigabytes. The idle window is 2 s
+     * rather than something tighter because a large upload through a tunnel
+     * really does pause — a 2 MiB body stalled long enough to trip a 500 ms
+     * window and get reset again.
+     */
+    private static void drainWhatIsAlreadyComing(HttpServletRequest request) {
+        long hardDeadline = System.currentTimeMillis() + DRAIN_TOTAL_BUDGET_MILLIS;
+        long idleDeadline = System.currentTimeMillis() + DRAIN_IDLE_GIVEUP_MILLIS;
+        long discarded = 0;
+        try {
+            InputStream in = request.getInputStream();
+            byte[] sink = new byte[8192];
+            while (System.currentTimeMillis() < hardDeadline
+                    && System.currentTimeMillis() < idleDeadline
+                    && discarded < MAX_DRAIN_BYTES) {
+                int available = in.available();
+                if (available <= 0) {
+                    Thread.sleep(10);
+                    continue;
+                }
+                int n = in.read(sink, 0, Math.min(sink.length, available));
+                if (n < 0) {
+                    break; // client finished; nothing left to swallow
+                }
+                discarded += n;
+                idleDeadline = System.currentTimeMillis() + DRAIN_IDLE_GIVEUP_MILLIS;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException ignored) {
+            // Client went away mid-upload. We are rejecting the request anyway.
+        }
     }
 
     private JsonNode parseJson(byte[] rawBody) {
